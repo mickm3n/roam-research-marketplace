@@ -6,10 +6,7 @@
     "name": "Mick",
     "url": "https://github.com/mickm3n/roam-research-plugin"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/mickm3n/roam-research-plugin"
-  },
+  "repository": "https://github.com/mickm3n/roam-research-plugin",
   "license": "MIT",
   "keywords": [
     "roam-research",

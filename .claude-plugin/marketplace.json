@@ -1,0 +1,33 @@
+{
+  "name": "roam-research-marketplace",
+  "owner": {
+    "name": "Mick",
+    "email": "your@email.com"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for Roam Research integration"
+  },
+  "plugins": [
+    {
+      "name": "roam-research",
+      "source": "./plugins/roam-research",
+      "description": "Create and manage pages in Roam Research via API",
+      "version": "1.0.0",
+      "author": {
+        "name": "Mick"
+      },
+      "homepage": "https://github.com/mickm3n/roam-research-plugin",
+      "repository": "https://github.com/mickm3n/roam-research-plugin",
+      "license": "MIT",
+      "keywords": [
+        "roam-research",
+        "roam",
+        "api",
+        "pages",
+        "productivity",
+        "knowledge-management"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

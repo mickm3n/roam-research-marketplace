@@ -1,7 +1,7 @@
 {
   "name": "roam-research",
   "description": "Create and manage pages in Roam Research via API",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "Mick",
     "url": "https://github.com/mickm3n/roam-research-plugin"

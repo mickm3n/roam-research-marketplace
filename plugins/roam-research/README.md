@@ -4,11 +4,14 @@ This plugin enables Claude Code to interact with your Roam Research graph via th
 
 ## Features
 
-- Create pages in Roam Research from Claude Code
+- **Create pages** in Roam Research from Claude Code
+- **Write content to today's daily notes** page automatically
+- **Write content to any page** by specifying its title
 - Support for bulk operations (monthly pages, daily notes, project pages, etc.)
 - Flexible input methods (command line, file, stdin)
 - Dry-run mode to preview changes
 - Automatic handling of duplicate pages
+- Auto-creates target page if it doesn't exist when writing content
 - Custom page properties (children-view-type, etc.)
 
 ## Installation
@@ -63,9 +66,24 @@ claude
 
 ## Usage
 
-Once installed and configured, you can ask Claude to create pages in your Roam Research graph.
+Once installed and configured, you can ask Claude to create pages and write content in your Roam Research graph.
 
 ### Example Requests
+
+**Write to today's daily notes:**
+```
+Add a note to today's Roam page: Had a great brainstorming session about the new product
+```
+
+**Write to a specific page:**
+```
+Add "Review Q1 metrics" to my Project Alpha page in Roam
+```
+
+**Add a TODO to today's page:**
+```
+Add a TODO item to today's Roam page: finish the design review
+```
 
 **Create monthly pages for 2026:**
 ```
@@ -89,7 +107,51 @@ Create a "Meeting Notes" page with numbered children view in Roam
 
 ## Manual Script Usage
 
-The plugin includes a `create-pages.js` script that can be used directly:
+The plugin includes two scripts:
+- `create-pages.js` — Create new pages
+- `write-content.js` — Write content (blocks) to a page
+
+### Write Content Script
+
+#### Write to Today's Daily Notes
+
+```bash
+node roam-research-plugin/skills/roam-research/scripts/write-content.js \
+  --today --content "Meeting notes from standup"
+```
+
+#### Write to a Specific Page
+
+```bash
+node roam-research-plugin/skills/roam-research/scripts/write-content.js \
+  --page "Project Alpha" --content "TODO: Review design doc"
+```
+
+#### Write Multiple Blocks from Stdin
+
+```bash
+echo -e "First block\nSecond block\nThird block" | \
+  node roam-research-plugin/skills/roam-research/scripts/write-content.js \
+  --page "Meeting Notes" --stdin
+```
+
+#### Write with Roam Formatting
+
+```bash
+node roam-research-plugin/skills/roam-research/scripts/write-content.js \
+  --today --content "{{TODO}} finish the design review"
+```
+
+#### Dry Run (Preview)
+
+```bash
+node roam-research-plugin/skills/roam-research/scripts/write-content.js \
+  --today --content "Test content" --dry-run
+```
+
+### Create Pages Script
+
+The `create-pages.js` script can be used directly:
 
 ### From Command Line
 
@@ -201,6 +263,7 @@ The graph is not ready yet. Wait a moment and try again.
 
 ## Script Features
 
+### create-pages.js
 - **Flexible Input**: Accept titles from command line, files, or stdin
 - **Individual Requests**: Creates pages one by one for better error handling
 - **Duplicate Removal**: Automatically removes duplicate titles
@@ -209,6 +272,16 @@ The graph is not ready yet. Wait a moment and try again.
 - **Custom Properties**: Support for children-view-type and other page properties
 - **Error Handling**: Comprehensive error messages and status codes
 - **Progress Indicator**: Shows progress during bulk operations
+
+### write-content.js
+- **Today's Page**: Auto-generates today's date in Roam format (e.g., "February 5th, 2026")
+- **Named Page**: Write to any page by title
+- **Auto-Create**: Automatically creates the target page if it doesn't exist
+- **Multiple Blocks**: Write multiple blocks via stdin (one per line)
+- **Roam Syntax**: Full support for Roam markdown (`**bold**`, `[[links]]`, `#tags`, `{{TODO}}`, etc.)
+- **Dry Run Mode**: Preview changes before executing
+- **Error Handling**: Comprehensive error messages and status codes
+- **Progress Indicator**: Shows progress during write operations
 
 ## Requirements
 
@@ -233,6 +306,13 @@ If you encounter any issues or have questions:
 3. Open an issue on GitHub
 
 ## Changelog
+
+### 1.1.0 (2026-02-05)
+- New: `write-content.js` script for writing content blocks to pages
+- New: Write to today's daily notes page with `--today` flag
+- New: Write to any named page with `--page` flag
+- New: Auto-create target page if it doesn't exist
+- New: Support for multiple blocks via stdin
 
 ### 1.0.0 (2026-01-05)
 - Initial release

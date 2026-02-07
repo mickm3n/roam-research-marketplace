@@ -1,12 +1,12 @@
 ---
 name: roam-research
-description: Create pages and write content to Roam Research via API. Use when the user wants to create pages, write content to today's daily notes, write to a specific page, or perform bulk operations in their Roam Research graph.
+description: Read, create, and write content in Roam Research via API. Use when the user wants to read page content, find references/backlinks, see recently modified pages, create pages, write content to today's daily notes, write to a specific page, or perform bulk operations in their Roam Research graph.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
 # Roam Research Integration
 
-This Skill allows you to interact with Roam Research via their Backend API to create pages, write content to pages, and perform other write operations.
+This Skill allows you to interact with Roam Research via their Backend API to read page content, find references/backlinks, list recently modified pages, create pages, and write content to pages.
 
 ## Prerequisites
 
@@ -50,16 +50,76 @@ echo $ROAM_GRAPH_NAME
 
 ## Available Scripts
 
-This Skill provides two scripts:
+This Skill provides three scripts:
 
 | Script | Purpose | Use When |
 |--------|---------|----------|
+| `read-content.js` | Read page content, references, modified pages | User wants to read/view page content, find backlinks, or see recently modified pages |
 | `create-pages.js` | Create new pages | User wants to create one or more pages |
 | `write-content.js` | Write content blocks to a page | User wants to add text/content to a page |
 
 ---
 
-## Script 1: Create Pages (`create-pages.js`)
+## Script 1: Read Content (`read-content.js`)
+
+The `read-content.js` script reads content from Roam Research. It supports three modes: reading a page's full block tree, finding references/backlinks to a page, and listing pages modified today.
+
+### Modes
+
+Specify exactly one mode:
+
+- `--page <title>` or `-p <title>`: Read the full block tree of a page
+- `--references <title>` or `-r <title>`: Find all blocks that reference (backlink) a page
+- `--modified-today`: List pages with blocks modified today
+
+### Options
+
+- `--json`: Output results as JSON (for programmatic use)
+- `--help`: Show usage information
+
+### Read Content Workflow
+
+When the user requests to read content from Roam Research:
+
+1. **Verify environment variables**: Check that the required environment variables are set
+   ```bash
+   if [ -z "$ROAM_API_TOKEN" ] || [ -z "$ROAM_GRAPH_NAME" ]; then
+     echo "Error: Please set ROAM_API_TOKEN and ROAM_GRAPH_NAME environment variables"
+     exit 1
+   fi
+   ```
+
+2. **Determine the mode**: Based on the user's request:
+   - To read a page's content: use `--page "Page Title"`
+   - To find what references a page: use `--references "Page Title"`
+   - To see what was modified today: use `--modified-today`
+
+3. **Run the script**:
+   ```bash
+   # Read a page's block tree
+   node scripts/read-content.js --page "Project Alpha"
+
+   # Find references/backlinks
+   node scripts/read-content.js --references "Project Alpha"
+
+   # List pages modified today
+   node scripts/read-content.js --modified-today
+   ```
+
+4. **Use JSON mode** when you need structured data for further processing:
+   ```bash
+   node scripts/read-content.js --page "Project Alpha" --json
+   ```
+
+### How It Works
+
+- **Read page**: Queries the page UID, then recursively fetches all child blocks level-by-level (up to 10 levels deep), outputting an indented block tree
+- **References**: Uses Datalog queries with ancestor rules to find all blocks (including deeply nested ones) that reference the target page via `[[page links]]`, grouped by source page
+- **Modified today**: Queries for blocks with edit timestamps after midnight today, returning the page titles sorted by most recent edit
+
+---
+
+## Script 3: Create Pages (`create-pages.js`)
 
 The `create-pages.js` script is a general-purpose tool for creating pages in Roam Research.
 
@@ -110,7 +170,7 @@ When the user requests to create pages:
 
 ---
 
-## Script 2: Write Content (`write-content.js`)
+## Script 4: Write Content (`write-content.js`)
 
 The `write-content.js` script writes content (blocks) to an existing or new page in Roam Research. It supports writing to today's daily notes page or any specified page.
 
@@ -199,6 +259,51 @@ Common errors and solutions:
 - **Environment variables not set**: User needs to export ROAM_API_TOKEN and ROAM_GRAPH_NAME
 
 ## Example Usage
+
+### Reading Content
+
+**Example 1: Read a page's content**
+
+User: "Show me what's on my Project Alpha page in Roam"
+
+Your workflow:
+```bash
+node scripts/read-content.js --page "Project Alpha"
+```
+
+**Example 2: Find references/backlinks**
+
+User: "What pages reference Project Alpha in my Roam graph?"
+
+Your workflow:
+```bash
+node scripts/read-content.js --references "Project Alpha"
+```
+
+**Example 3: See what was modified today**
+
+User: "What pages did I edit today in Roam?"
+
+Your workflow:
+```bash
+node scripts/read-content.js --modified-today
+```
+
+**Example 4: Read today's daily notes**
+
+User: "Show me today's daily notes page"
+
+Your workflow:
+```bash
+# Use Roam's daily notes date format
+node scripts/read-content.js --page "February 8th, 2026"
+```
+
+**Example 5: Get JSON output for further processing**
+
+```bash
+node scripts/read-content.js --page "Project Alpha" --json
+```
 
 ### Creating Pages
 

@@ -50,13 +50,13 @@ echo $ROAM_GRAPH_NAME
 
 ## Available Scripts
 
-This Skill provides three scripts:
+This Skill provides four scripts:
 
 | Script | Purpose | Use When |
 |--------|---------|----------|
 | `read-content.js` | Read page content, references, modified pages | User wants to read/view page content, find backlinks, or see recently modified pages |
 | `create-pages.js` | Create new pages | User wants to create one or more pages |
-| `write-content.js` | Write content blocks to a page | User wants to add text/content to a page |
+| `write-content.js` | Write content blocks to a page (flat or nested) | User wants to add text blocks to a page; use `--nested` for outline structure |
 
 ---
 
@@ -186,12 +186,36 @@ Specify the target page using one of:
 Provide content using one of:
 
 - `--content <text>` or `-c <text>`: Write a single block
-- `--stdin`: Read content from stdin (one block per line, skips empty lines and comments starting with #)
+- `--stdin`: Read flat content from stdin (one block per line, all at same level)
+- `--nested`: Read indented content from stdin; **2 spaces per level** maps to Roam outline depth
 
 ### Options
 
 - `--dry-run`: Preview what would be written without making API calls
 - `--help`: Show usage information
+
+### Nested Mode (`--nested`)
+
+Use `--nested` when you want to write a structured outline with sections and sub-bullets. Each block becomes a child of the block one indent level above it.
+
+```
+[[日記]]
+  **今日完成**
+    - 做了A
+    - 做了B
+  **心情與狀態**
+    整體不錯
+```
+
+```bash
+printf '%s\n' \
+  '[[日記]]' \
+  '  **今日完成**' \
+  '    - 做了A' \
+  '  **心情與狀態**' \
+  '    整體不錯' \
+  | node scripts/write-content.js --page "April 19th, 2026" --nested
+```
 
 ### Write Content Workflow
 

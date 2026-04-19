@@ -2,6 +2,7 @@
 
 const https = require('https');
 const readline = require('readline');
+const crypto = require('crypto');
 
 // Show usage information
 function showUsage() {
@@ -15,6 +16,7 @@ Options:
   --today              Write to today's daily notes page
   --content <text>     Content to write as a new block
   --stdin              Read content from stdin (one block per line)
+  --nested             Use indented stdin input to create nested blocks (2 spaces per level)
   --dry-run            Preview without making API calls
   --help               Show this help message
 
@@ -29,9 +31,13 @@ Examples:
   # Write to a specific page
   write-content.js --page "Project Alpha" --content "TODO: Review design doc"
 
-  # Write multiple blocks from stdin
+  # Write multiple flat blocks from stdin
   echo -e "First block\\nSecond block\\nThird block" | \\
     write-content.js --page "Meeting Notes" --stdin
+
+  # Write nested blocks using indentation (2 spaces per level)
+  printf '%s\\n' '[[日記]]' '  **今日完成**' '    - 做了A' | \\
+    write-content.js --page "April 19th, 2026" --nested
 
   # Dry run to preview
   write-content.js --today --content "Test content" --dry-run
@@ -46,6 +52,7 @@ function parseArgs() {
     today: false,
     content: null,
     stdin: false,
+    nested: false,
     dryRun: false,
     help: false
   };
@@ -70,6 +77,9 @@ function parseArgs() {
         break;
       case '--stdin':
         options.stdin = true;
+        break;
+      case '--nested':
+        options.nested = true;
         break;
       case '--dry-run':
         options.dryRun = true;
@@ -133,7 +143,7 @@ function getOrdinalSuffix(day) {
   }
 }
 
-// Read content lines from stdin
+// Read content lines from stdin (flat mode: trim lines)
 async function readContentFromStdin() {
   return new Promise((resolve) => {
     const lines = [];
@@ -152,6 +162,44 @@ async function readContentFromStdin() {
 
     rl.on('close', () => resolve(lines));
   });
+}
+
+// Read raw lines from stdin preserving indentation (nested mode)
+async function readRawLinesFromStdin() {
+  return new Promise((resolve) => {
+    const lines = [];
+    const rl = readline.createInterface({ input: process.stdin, terminal: false });
+    rl.on('line', (line) => { if (line.trimEnd()) lines.push(line.trimEnd()); });
+    rl.on('close', () => resolve(lines));
+  });
+}
+
+// Generate a 9-character Roam-compatible UID
+function generateUid() {
+  return crypto.randomBytes(6).toString('base64url').slice(0, 9);
+}
+
+// Parse indented lines into a tree (2 spaces per level)
+function parseIndentedLines(lines) {
+  const root = { text: null, depth: -1, children: [], uid: null };
+  const stack = [root];
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const spaces = line.length - line.trimStart().length;
+    const depth = Math.floor(spaces / 2);
+    const raw = line.trimStart();
+    const text = raw.startsWith('- ') ? raw.slice(2) : raw;
+    const node = { text, depth, children: [], uid: generateUid() };
+
+    while (stack.length > 1 && stack[stack.length - 1].depth >= depth) {
+      stack.pop();
+    }
+    stack[stack.length - 1].children.push(node);
+    stack.push(node);
+  }
+
+  return root.children;
 }
 
 // Make HTTPS request (shared helper)
@@ -261,17 +309,16 @@ async function createPage(config, pageTitle) {
   await makeHttpsRequest(options, payload);
 }
 
-// Create a block under a page
-async function createBlock(config, parentUid, content) {
+// Create a block under a parent (optionally with a pre-generated uid)
+async function createBlock(config, parentUid, content, uid = null) {
+  const block = uid ? { uid, string: content } : { string: content };
   const payload = JSON.stringify({
     action: 'create-block',
     location: {
       'parent-uid': parentUid,
       order: 'last'
     },
-    block: {
-      string: content
-    }
+    block
   });
 
   const options = {
@@ -288,6 +335,31 @@ async function createBlock(config, parentUid, content) {
   };
 
   return await makeHttpsRequest(options, payload);
+}
+
+// Recursively write a nested tree of blocks
+async function writeTree(config, parentUid, nodes, stats) {
+  for (const node of nodes) {
+    try {
+      await createBlock(config, parentUid, node.text, node.uid);
+      stats.written++;
+      process.stdout.write('.');
+    } catch (error) {
+      stats.failed++;
+      process.stdout.write('x');
+    }
+    if (node.children.length > 0) {
+      await writeTree(config, node.uid, node.children, stats);
+    }
+  }
+}
+
+// Print tree for dry-run preview
+function printTree(nodes, indent = 0) {
+  for (const node of nodes) {
+    console.log(`${'  '.repeat(indent)}${node.text}`);
+    if (node.children.length) printTree(node.children, indent + 1);
+  }
 }
 
 // Ensure a page exists and return its UID
@@ -339,7 +411,40 @@ async function main() {
     // Determine target page title
     const pageTitle = options.today ? getTodayRoamTitle() : options.page;
 
-    // Get content to write
+    // --- Nested mode ---
+    if (options.nested) {
+      const rawLines = await readRawLinesFromStdin();
+      const tree = parseIndentedLines(rawLines);
+
+      if (tree.length === 0) {
+        console.error('Error: No content provided via stdin.');
+        process.exit(1);
+      }
+
+      if (options.dryRun) {
+        console.log(`Dry run — target: "${pageTitle}"`);
+        printTree(tree);
+        process.exit(0);
+      }
+
+      const config = loadConfig();
+      console.log(`Writing to Roam Research graph: ${config.graphName}`);
+      console.log(`Target page: "${pageTitle}"\n`);
+
+      const pageUid = await ensurePageAndGetUid(config, pageTitle);
+      console.log(`  Page UID: ${pageUid}`);
+
+      const stats = { written: 0, failed: 0 };
+      await writeTree(config, pageUid, tree, stats);
+
+      console.log('\n\nSummary:');
+      console.log(`  ✓ Written: ${stats.written}`);
+      console.log(`  ✗ Failed: ${stats.failed}`);
+      if (stats.failed > 0) process.exit(1);
+      return;
+    }
+
+    // --- Flat mode ---
     let contentLines = [];
 
     if (options.stdin) {

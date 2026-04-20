@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+'use strict';
 
-const https = require('https');
 const readline = require('readline');
 const crypto = require('crypto');
+const { roamWrite } = require('./lib/http');
+const { pageLocation, dailyNoteLocation, parentUidLocation, buildFlatActions, buildNestedActions } = require('./lib/batch-builder');
 
-// Show usage information
 function showUsage() {
   console.log(`
 Usage: write-content.js [options]
@@ -12,7 +13,7 @@ Usage: write-content.js [options]
 Write content (blocks) to a Roam Research page.
 
 Options:
-  --page <title>         Target page title to write to
+  --page <title>         Target page title (created automatically if it doesn't exist)
   --today                Write to today's daily notes page
   --parent <uid>         Create new block(s) as children of a specific block UID
   --update-block <uid>   Update an existing block's content (use with --content)
@@ -27,181 +28,93 @@ Environment Variables (required):
   ROAM_GRAPH_NAME      Your Roam Research graph name
 
 Examples:
-  # Write a block to today's daily notes page
   write-content.js --today --content "Meeting notes from standup"
-
-  # Write to a specific page
   write-content.js --page "Project Alpha" --content "TODO: Review design doc"
-
-  # Write multiple flat blocks from stdin
-  echo -e "First block\\nSecond block\\nThird block" | \\
-    write-content.js --page "Meeting Notes" --stdin
-
-  # Write nested blocks using indentation (2 spaces per level)
-  printf '%s\\n' 'Meeting Summary' '  **Decisions**' '    - Ship feature A' | \\
-    write-content.js --page "Meeting Notes" --nested
-
-  # Write blocks as children of a specific block UID
+  echo -e "First\\nSecond\\nThird" | write-content.js --page "Meeting Notes" --stdin
+  printf '%s\\n' 'Summary' '  **Decisions**' '    - Ship A' | write-content.js --today --nested
   write-content.js --parent "abc123xyz" --content "child block"
-
-  # Update an existing block's content
   write-content.js --update-block "abc123xyz" --content "updated content"
 
-  # Batch via Roam's native batch-actions API (1 request, most efficient)
-  echo '[
-    {"action":"update-block","block":{"uid":"abc123","string":"Mon: Gym, Team lunch"}},
-    {"action":"create-block","location":{"parent-uid":"xyz456","order":"last"},"block":{"string":"Ship feature A"}}
-  ]' | write-content.js --stdin
-
-  # Dry run to preview
-  write-content.js --today --content "Test content" --dry-run
+  # Batch via Roam's native batch-actions API (1 request)
+  echo '[{"action":"update-block","block":{"uid":"abc123","string":"updated"}}]' | write-content.js --stdin
 `);
 }
 
-// Parse command line arguments
 function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
-    page: null,
-    today: false,
-    parent: null,
-    updateBlock: null,
-    content: null,
-    stdin: false,
-    nested: false,
-    dryRun: false,
-    help: false
+    page: null, today: false, parent: null, updateBlock: null,
+    content: null, stdin: false, nested: false, dryRun: false, help: false
   };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
-      case '--help':
-      case '-h':
-        options.help = true;
-        break;
-      case '--page':
-      case '-p':
-        options.page = args[++i];
-        break;
-      case '--today':
-      case '-t':
-        options.today = true;
-        break;
-      case '--parent':
-        options.parent = args[++i];
-        break;
-      case '--update-block':
-        options.updateBlock = args[++i];
-        break;
-      case '--content':
-      case '-c':
-        options.content = args[++i];
-        break;
-      case '--stdin':
-        options.stdin = true;
-        break;
-      case '--nested':
-        options.nested = true;
-        break;
-      case '--dry-run':
-        options.dryRun = true;
-        break;
+      case '--help': case '-h': options.help = true; break;
+      case '--page': case '-p': options.page = args[++i]; break;
+      case '--today': case '-t': options.today = true; break;
+      case '--parent': options.parent = args[++i]; break;
+      case '--update-block': options.updateBlock = args[++i]; break;
+      case '--content': case '-c': options.content = args[++i]; break;
+      case '--stdin': options.stdin = true; break;
+      case '--nested': options.nested = true; break;
+      case '--dry-run': options.dryRun = true; break;
       default:
         console.error(`Unknown option: ${args[i]}`);
         process.exit(1);
     }
   }
-
   return options;
 }
 
-// Load configuration from environment variables
 function loadConfig() {
   const graphName = process.env.ROAM_GRAPH_NAME;
   const apiToken = process.env.ROAM_API_TOKEN;
-
   if (!graphName || !apiToken) {
-    console.error('Error: Required environment variables not set');
-    console.error('');
-    console.error('Please set the following environment variables:');
-    console.error('  ROAM_GRAPH_NAME    Your Roam Research graph name');
-    console.error('  ROAM_API_TOKEN     Your Roam Research API token');
-    console.error('');
-    console.error('Example:');
-    console.error('  export ROAM_GRAPH_NAME="my-graph"');
-    console.error('  export ROAM_API_TOKEN="roam-graph-token-xxx"');
-    console.error('');
+    console.error('Error: ROAM_GRAPH_NAME and ROAM_API_TOKEN must be set');
     process.exit(1);
   }
-
   return { graphName, apiToken };
 }
 
-// Format today's date in Roam Research daily notes format
-// Roam uses: "February 5th, 2026"
+function getTodayDailyNoteDate() {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${mm}-${dd}-${now.getFullYear()}`;
+}
+
 function getTodayRoamTitle() {
   const now = new Date();
-  const months = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-  ];
-
-  const month = months[now.getMonth()];
+  const months = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
   const day = now.getDate();
-  const year = now.getFullYear();
-  const suffix = getOrdinalSuffix(day);
-
-  return `${month} ${day}${suffix}, ${year}`;
+  const suffix = day >= 11 && day <= 13 ? 'th'
+    : day % 10 === 1 ? 'st' : day % 10 === 2 ? 'nd' : day % 10 === 3 ? 'rd' : 'th';
+  return `${months[now.getMonth()]} ${day}${suffix}, ${now.getFullYear()}`;
 }
 
-// Get ordinal suffix for a day number
-function getOrdinalSuffix(day) {
-  if (day >= 11 && day <= 13) return 'th';
-  switch (day % 10) {
-    case 1: return 'st';
-    case 2: return 'nd';
-    case 3: return 'rd';
-    default: return 'th';
-  }
-}
-
-// Read content lines from stdin (flat mode: trim lines)
-async function readContentFromStdin() {
-  return new Promise((resolve) => {
-    const lines = [];
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: false
-    });
-
-    rl.on('line', (line) => {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
-        lines.push(trimmed);
-      }
-    });
-
-    rl.on('close', () => resolve(lines));
-  });
-}
-
-// Read raw lines from stdin preserving indentation (nested mode)
-async function readRawLinesFromStdin() {
-  return new Promise((resolve) => {
-    const lines = [];
-    const rl = readline.createInterface({ input: process.stdin, terminal: false });
-    rl.on('line', (line) => { if (line.trimEnd()) lines.push(line.trimEnd()); });
-    rl.on('close', () => resolve(lines));
-  });
-}
-
-// Generate a 9-character Roam-compatible UID
 function generateUid() {
   return crypto.randomBytes(6).toString('base64url').slice(0, 9);
 }
 
-// Parse indented lines into a tree (2 spaces per level)
+async function readLinesFromStdin() {
+  return new Promise((resolve) => {
+    const lines = [];
+    const rl = readline.createInterface({ input: process.stdin, terminal: false });
+    rl.on('line', (line) => { const t = line.trimEnd(); if (t) lines.push(t); });
+    rl.on('close', () => resolve(lines));
+  });
+}
+
+async function readFlatLinesFromStdin() {
+  return new Promise((resolve) => {
+    const lines = [];
+    const rl = readline.createInterface({ input: process.stdin, terminal: false });
+    rl.on('line', (line) => { const t = line.trim(); if (t && !t.startsWith('#')) lines.push(t); });
+    rl.on('close', () => resolve(lines));
+  });
+}
+
 function parseIndentedLines(lines) {
   const root = { text: null, depth: -1, children: [], uid: null };
   const stack = [root];
@@ -214,9 +127,7 @@ function parseIndentedLines(lines) {
     const text = raw.startsWith('- ') ? raw.slice(2) : raw;
     const node = { text, depth, children: [], uid: generateUid() };
 
-    while (stack.length > 1 && stack[stack.length - 1].depth >= depth) {
-      stack.pop();
-    }
+    while (stack.length > 1 && stack[stack.length - 1].depth >= depth) stack.pop();
     stack[stack.length - 1].children.push(node);
     stack.push(node);
   }
@@ -224,182 +135,6 @@ function parseIndentedLines(lines) {
   return root.children;
 }
 
-// Make HTTPS request (shared helper)
-function makeHttpsRequest(requestOptions, payload, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    const makeRequest = (opts) => {
-      const req = https.request(opts, (res) => {
-        // Handle redirects
-        if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 308) {
-          const redirectUrl = new URL(res.headers.location);
-          const redirectOpts = {
-            hostname: redirectUrl.hostname,
-            port: redirectUrl.port || 443,
-            path: redirectUrl.pathname + redirectUrl.search,
-            method: opts.method,
-            headers: opts.headers,
-            timeout: timeout
-          };
-
-          const redirectReq = https.request(redirectOpts, (redirectRes) => {
-            let data = '';
-            redirectRes.on('data', (chunk) => { data += chunk; });
-            redirectRes.on('end', () => {
-              if (redirectRes.statusCode === 200) {
-                resolve({ statusCode: redirectRes.statusCode, data: data ? JSON.parse(data) : {} });
-              } else {
-                reject({ statusCode: redirectRes.statusCode, message: data });
-              }
-            });
-          });
-
-          redirectReq.on('error', reject);
-          redirectReq.on('timeout', () => { redirectReq.destroy(); reject(new Error('Request timeout')); });
-          redirectReq.write(payload);
-          redirectReq.end();
-          return;
-        }
-
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode === 200) {
-            resolve({ statusCode: res.statusCode, data: data ? JSON.parse(data) : {} });
-          } else {
-            reject({ statusCode: res.statusCode, message: data });
-          }
-        });
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-      req.write(payload);
-      req.end();
-    };
-
-    makeRequest(requestOptions);
-  });
-}
-
-// Query Roam Research for a page UID by title
-async function queryPageUid(config, pageTitle) {
-  const query = `[:find ?uid :where [?e :node/title "${pageTitle.replace(/"/g, '\\"')}"] [?e :block/uid ?uid]]`;
-  const payload = JSON.stringify({ query });
-
-  const options = {
-    hostname: 'api.roamresearch.com',
-    path: `/api/graph/${config.graphName}/q`,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload),
-      'Authorization': `Bearer ${config.apiToken}`,
-      'Accept': 'application/json'
-    },
-    timeout: 30000
-  };
-
-  const response = await makeHttpsRequest(options, payload);
-
-  // Response is like { result: [["uid-string"]] } or { result: [] }
-  if (response.data && response.data.result && response.data.result.length > 0) {
-    return response.data.result[0][0];
-  }
-  return null;
-}
-
-// Create a page in Roam Research
-async function createPage(config, pageTitle) {
-  const payload = JSON.stringify({
-    action: 'create-page',
-    page: { title: pageTitle }
-  });
-
-  const options = {
-    hostname: 'api.roamresearch.com',
-    path: `/api/graph/${config.graphName}/write`,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload),
-      'Authorization': `Bearer ${config.apiToken}`,
-      'Accept': 'application/json'
-    },
-    timeout: 30000
-  };
-
-  await makeHttpsRequest(options, payload);
-}
-
-// Update an existing block's string content
-async function updateBlockContent(config, blockUid, content) {
-  const payload = JSON.stringify({
-    action: 'update-block',
-    block: { uid: blockUid, string: content }
-  });
-
-  const options = {
-    hostname: 'api.roamresearch.com',
-    path: `/api/graph/${config.graphName}/write`,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload),
-      'Authorization': `Bearer ${config.apiToken}`,
-      'Accept': 'application/json'
-    },
-    timeout: 30000
-  };
-
-  return await makeHttpsRequest(options, payload);
-}
-
-// Create a block under a parent (optionally with a pre-generated uid)
-async function createBlock(config, parentUid, content, uid = null) {
-  const block = uid ? { uid, string: content } : { string: content };
-  const payload = JSON.stringify({
-    action: 'create-block',
-    location: {
-      'parent-uid': parentUid,
-      order: 'last'
-    },
-    block
-  });
-
-  const options = {
-    hostname: 'api.roamresearch.com',
-    path: `/api/graph/${config.graphName}/write`,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload),
-      'Authorization': `Bearer ${config.apiToken}`,
-      'Accept': 'application/json'
-    },
-    timeout: 30000
-  };
-
-  return await makeHttpsRequest(options, payload);
-}
-
-// Recursively write a nested tree of blocks
-async function writeTree(config, parentUid, nodes, stats) {
-  for (const node of nodes) {
-    try {
-      await createBlock(config, parentUid, node.text, node.uid);
-      stats.written++;
-      process.stdout.write('.');
-    } catch (error) {
-      stats.failed++;
-      process.stdout.write('x');
-    }
-    if (node.children.length > 0) {
-      await writeTree(config, node.uid, node.children, stats);
-    }
-  }
-}
-
-// Print tree for dry-run preview
 function printTree(nodes, indent = 0) {
   for (const node of nodes) {
     console.log(`${'  '.repeat(indent)}${node.text}`);
@@ -407,274 +142,138 @@ function printTree(nodes, indent = 0) {
   }
 }
 
-// Ensure a page exists and return its UID
-async function ensurePageAndGetUid(config, pageTitle) {
-  // First, try to find the page
-  let uid = await queryPageUid(config, pageTitle);
-
-  if (uid) {
-    return uid;
+async function runBatchActions(config, actions, label) {
+  const res = await roamWrite(config, { action: 'batch-actions', actions });
+  console.log(`✓ ${label} (${actions.length} action${actions.length !== 1 ? 's' : ''})`);
+  if (res && res['tempids-to-uids']) {
+    console.log('tempids-to-uids:', JSON.stringify(res['tempids-to-uids']));
   }
-
-  // Page doesn't exist, create it
-  console.log(`  Page "${pageTitle}" does not exist, creating it...`);
-  await createPage(config, pageTitle);
-
-  // Query again to get the UID
-  uid = await queryPageUid(config, pageTitle);
-
-  if (!uid) {
-    throw new Error(`Failed to get UID for page "${pageTitle}" after creation`);
-  }
-
-  return uid;
+  return res;
 }
 
-// Main function
 async function main() {
-  try {
-    const options = parseArgs();
+  const options = parseArgs();
 
-    // Show help if requested
-    if (options.help) {
-      showUsage();
-      process.exit(0);
+  if (options.help) { showUsage(); process.exit(0); }
+
+  // --- Batch JSON mode (raw batch-actions array via stdin, no target flag) ---
+  if (options.stdin && !options.page && !options.today && !options.parent && !options.updateBlock) {
+    const raw = await new Promise(resolve => {
+      let buf = '';
+      process.stdin.on('data', c => buf += c);
+      process.stdin.on('end', () => resolve(buf.trim()));
+    });
+    let actions;
+    try { actions = JSON.parse(raw); } catch {
+      console.error('Error: JSON batch input is invalid'); process.exit(1);
     }
-
-    // --- batch mode ---
-    if (options.stdin && !options.page && !options.today && !options.parent && !options.updateBlock) {
-      // If stdin + no target, parse as JSON batch-actions array
-      const raw = await new Promise(resolve => {
-        let buf = '';
-        process.stdin.on('data', c => buf += c);
-        process.stdin.on('end', () => resolve(buf.trim()));
-      });
-      let actions;
-      try { actions = JSON.parse(raw); } catch (e) {
-        console.error('Error: JSON batch input is invalid');
-        process.exit(1);
-      }
-      if (!Array.isArray(actions)) { console.error('Error: batch input must be a JSON array of Roam write actions'); process.exit(1); }
-      if (options.dryRun) {
-        console.log('Dry run — batch-actions:');
-        actions.forEach((a, i) => console.log(`  ${i + 1}. ${JSON.stringify(a)}`));
-        process.exit(0);
-      }
-      const config = loadConfig();
-      const payload = JSON.stringify({ action: 'batch-actions', actions });
-      const reqOptions = {
-        hostname: 'api.roamresearch.com',
-        path: `/api/graph/${config.graphName}/write`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-          'Authorization': `Bearer ${config.apiToken}`,
-          'Accept': 'application/json'
-        },
-        timeout: 30000
-      };
-      const res = await makeHttpsRequest(reqOptions, payload);
-      console.log(`✓ batch-actions completed (${actions.length} actions)`);
-      if (res.data && res.data['tempids-to-uids']) {
-        console.log('tempids-to-uids:', JSON.stringify(res.data['tempids-to-uids']));
-      }
-      return;
+    if (!Array.isArray(actions)) {
+      console.error('Error: batch input must be a JSON array of Roam write actions'); process.exit(1);
     }
-
-    // --- update-block mode ---
-    if (options.updateBlock) {
-      if (!options.content) {
-        console.error('Error: --update-block requires --content <text>');
-        process.exit(1);
-      }
-      if (options.dryRun) {
-        console.log(`Dry run — update block ${options.updateBlock}: ${options.content}`);
-        process.exit(0);
-      }
-      const config = loadConfig();
-      await updateBlockContent(config, options.updateBlock, options.content);
-      console.log(`✓ Updated block ${options.updateBlock}`);
-      return;
-    }
-
-    // --- parent mode (create children under a block UID) ---
-    if (options.parent) {
-      let contentLines = [];
-      if (options.stdin || options.nested) {
-        const rawLines = options.nested
-          ? await readRawLinesFromStdin()
-          : await readContentFromStdin();
-        contentLines = options.nested ? rawLines : rawLines;
-      } else if (options.content) {
-        contentLines = [options.content];
-      } else {
-        console.error('Error: --parent requires --content or --stdin');
-        process.exit(1);
-      }
-
-      if (options.dryRun) {
-        console.log(`Dry run — create under parent ${options.parent}:`);
-        contentLines.forEach(l => console.log(`  - ${l}`));
-        process.exit(0);
-      }
-
-      const config = loadConfig();
-      if (options.nested) {
-        const tree = parseIndentedLines(contentLines);
-        const stats = { written: 0, failed: 0 };
-        await writeTree(config, options.parent, tree, stats);
-        console.log(`\n✓ Written: ${stats.written}, ✗ Failed: ${stats.failed}`);
-      } else {
-        for (const line of contentLines) {
-          await createBlock(config, options.parent, line);
-          process.stdout.write('.');
-        }
-        console.log(`\n✓ ${contentLines.length} block(s) created under ${options.parent}`);
-      }
-      return;
-    }
-
-    // Validate: must specify either --page or --today
-    if (!options.page && !options.today) {
-      console.error('Error: Must specify one of --page, --today, --parent, or --update-block');
-      console.error('Run with --help for usage information.');
-      process.exit(1);
-    }
-
-    if (options.page && options.today) {
-      console.error('Error: Cannot use both --page and --today');
-      process.exit(1);
-    }
-
-    // Determine target page title
-    const pageTitle = options.today ? getTodayRoamTitle() : options.page;
-
-    // --- Nested mode ---
-    if (options.nested) {
-      const rawLines = await readRawLinesFromStdin();
-      const tree = parseIndentedLines(rawLines);
-
-      if (tree.length === 0) {
-        console.error('Error: No content provided via stdin.');
-        process.exit(1);
-      }
-
-      if (options.dryRun) {
-        console.log(`Dry run — target: "${pageTitle}"`);
-        printTree(tree);
-        process.exit(0);
-      }
-
-      const config = loadConfig();
-      console.log(`Writing to Roam Research graph: ${config.graphName}`);
-      console.log(`Target page: "${pageTitle}"\n`);
-
-      const pageUid = await ensurePageAndGetUid(config, pageTitle);
-      console.log(`  Page UID: ${pageUid}`);
-
-      const stats = { written: 0, failed: 0 };
-      await writeTree(config, pageUid, tree, stats);
-
-      console.log('\n\nSummary:');
-      console.log(`  ✓ Written: ${stats.written}`);
-      console.log(`  ✗ Failed: ${stats.failed}`);
-      if (stats.failed > 0) process.exit(1);
-      return;
-    }
-
-    // --- Flat mode ---
-    let contentLines = [];
-
-    if (options.stdin) {
-      contentLines = await readContentFromStdin();
-    } else if (options.content) {
-      contentLines = [options.content];
-    }
-
-    if (contentLines.length === 0) {
-      console.error('Error: No content provided.');
-      console.error('Use --content <text> or --stdin to provide content.');
-      console.error('Run with --help for usage information.');
-      process.exit(1);
-    }
-
-    // Dry run mode
     if (options.dryRun) {
-      console.log('Dry run mode - no changes will be made');
-      console.log(`Target page: "${pageTitle}"`);
-      console.log(`Content blocks to write (${contentLines.length}):`);
-      contentLines.forEach((line, i) => {
-        console.log(`  ${i + 1}. ${line}`);
-      });
+      console.log('Dry run — batch-actions:');
+      actions.forEach((a, i) => console.log(`  ${i + 1}. ${JSON.stringify(a)}`));
       process.exit(0);
     }
-
-    // Load config for actual API calls
     const config = loadConfig();
+    await runBatchActions(config, actions, 'batch-actions completed');
+    return;
+  }
 
-    console.log(`Writing to Roam Research graph: ${config.graphName}`);
-    console.log(`Target page: "${pageTitle}"`);
-    console.log('');
+  // --- Update block mode ---
+  if (options.updateBlock) {
+    if (!options.content) { console.error('Error: --update-block requires --content <text>'); process.exit(1); }
+    if (options.dryRun) { console.log(`Dry run — update block ${options.updateBlock}: ${options.content}`); process.exit(0); }
+    const config = loadConfig();
+    await roamWrite(config, { action: 'update-block', block: { uid: options.updateBlock, string: options.content } });
+    console.log(`✓ Updated block ${options.updateBlock}`);
+    return;
+  }
 
-    // Ensure page exists and get its UID
-    const pageUid = await ensurePageAndGetUid(config, pageTitle);
-    console.log(`  Page UID: ${pageUid}`);
+  // --- Parent mode (write as children of a specific block UID) ---
+  if (options.parent) {
+    const loc = parentUidLocation(options.parent);
+    let actions;
 
-    // Write content blocks
-    const results = {
-      written: [],
-      failed: []
-    };
-
-    for (const content of contentLines) {
-      try {
-        await createBlock(config, pageUid, content);
-        results.written.push(content);
-        process.stdout.write('.');
-      } catch (error) {
-        const errorMsg = error.message || 'Unknown error';
-        results.failed.push({ content, error: errorMsg });
-        process.stdout.write('x');
-      }
+    if (options.nested) {
+      const rawLines = await readLinesFromStdin();
+      const tree = parseIndentedLines(rawLines);
+      if (tree.length === 0) { console.error('Error: No content provided via stdin.'); process.exit(1); }
+      if (options.dryRun) { console.log(`Dry run — create under parent ${options.parent}:`); printTree(tree); process.exit(0); }
+      actions = buildNestedActions(loc, tree);
+    } else {
+      const lines = options.content ? [options.content] : await readFlatLinesFromStdin();
+      if (lines.length === 0) { console.error('Error: --parent requires --content or --stdin'); process.exit(1); }
+      if (options.dryRun) { console.log(`Dry run — create under parent ${options.parent}:`); lines.forEach(l => console.log(`  - ${l}`)); process.exit(0); }
+      actions = buildFlatActions(loc, lines);
     }
 
-    console.log('\n');
-    console.log('Summary:');
-    console.log(`  ✓ Written: ${results.written.length}`);
-    console.log(`  ✗ Failed: ${results.failed.length}`);
-    console.log('');
+    const config = loadConfig();
+    await runBatchActions(config, actions, `block(s) created under ${options.parent}`);
+    return;
+  }
 
-    if (results.written.length > 0) {
-      console.log('Written blocks:');
-      results.written.forEach((content, i) => {
-        const preview = content.length > 80 ? content.substring(0, 77) + '...' : content;
-        console.log(`  ${i + 1}. ${preview}`);
-      });
-      console.log('');
-    }
-
-    if (results.failed.length > 0) {
-      console.log('Failed blocks:');
-      results.failed.forEach(({ content, error }, i) => {
-        const preview = content.length > 60 ? content.substring(0, 57) + '...' : content;
-        console.log(`  ${i + 1}. ${preview}: ${error}`);
-      });
-      console.log('');
-    }
-
-    // Exit with error if any blocks failed
-    if (results.failed.length > 0) {
-      process.exit(1);
-    }
-
-  } catch (error) {
-    console.error('');
-    console.error('✗ Fatal error:');
-    console.error(error.message || error);
+  // Validate target
+  if (!options.page && !options.today) {
+    console.error('Error: Must specify one of --page, --today, --parent, or --update-block');
+    console.error('Run with --help for usage information.');
     process.exit(1);
   }
+  if (options.page && options.today) {
+    console.error('Error: Cannot use both --page and --today');
+    process.exit(1);
+  }
+
+  const loc = options.today
+    ? dailyNoteLocation(getTodayDailyNoteDate())
+    : pageLocation(options.page);
+
+  const displayTarget = options.today ? getTodayRoamTitle() : options.page;
+
+  // --- Nested mode ---
+  if (options.nested) {
+    const rawLines = await readLinesFromStdin();
+    const tree = parseIndentedLines(rawLines);
+    if (tree.length === 0) { console.error('Error: No content provided via stdin.'); process.exit(1); }
+
+    if (options.dryRun) {
+      console.log(`Dry run — target: "${displayTarget}"`);
+      printTree(tree);
+      process.exit(0);
+    }
+
+    const config = loadConfig();
+    const actions = buildNestedActions(loc, tree);
+    console.log(`Writing to "${displayTarget}"...`);
+    await runBatchActions(config, actions, `nested blocks written`);
+    return;
+  }
+
+  // --- Flat mode ---
+  const lines = options.content ? [options.content] : await readFlatLinesFromStdin();
+  if (lines.length === 0) {
+    console.error('Error: No content provided. Use --content <text> or --stdin.');
+    process.exit(1);
+  }
+
+  if (options.dryRun) {
+    console.log(`Dry run — target: "${displayTarget}"`);
+    lines.forEach((line, i) => console.log(`  ${i + 1}. ${line}`));
+    process.exit(0);
+  }
+
+  const config = loadConfig();
+  const actions = buildFlatActions(loc, lines);
+  console.log(`Writing to "${displayTarget}"...`);
+  await runBatchActions(config, actions, `${lines.length} block(s) written`);
 }
 
-// Run main function
-main();
+main().catch(error => {
+  console.error('\nFatal error:');
+  if (error.statusCode) {
+    console.error(`  HTTP ${error.statusCode}: ${error.body || error.message}`);
+  } else {
+    console.error(`  ${error.message || error}`);
+  }
+  process.exit(1);
+});

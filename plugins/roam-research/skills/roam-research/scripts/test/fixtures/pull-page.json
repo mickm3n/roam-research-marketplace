@@ -1,0 +1,45 @@
+{
+  "result": {
+    ":block/uid": "page-uid-1",
+    ":node/title": "Test Page",
+    ":block/children": [
+      {
+        ":block/uid": "block-b",
+        ":block/string": "Second block",
+        ":block/order": 1,
+        ":block/children": []
+      },
+      {
+        ":block/uid": "block-a",
+        ":block/string": "First block",
+        ":block/order": 0,
+        ":block/children": [
+          {
+            ":block/uid": "block-a1",
+            ":block/string": "Nested child A1",
+            ":block/order": 0,
+            ":block/children": []
+          },
+          {
+            ":block/uid": "block-a2",
+            ":block/string": "Nested child A2",
+            ":block/order": 1,
+            ":block/children": [
+              {
+                ":block/uid": "block-a2a",
+                ":block/string": "Deep grandchild",
+                ":block/order": 0,
+                ":block/children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        ":block/uid": "block-c",
+        ":block/string": "Third block",
+        ":block/order": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "result": {
+    ":block/uid": "root-block-uid",
+    ":block/string": "Root block",
+    ":block/order": 0,
+    ":block/children": [
+      {
+        ":block/uid": "child-1",
+        ":block/string": "Child one",
+        ":block/order": 0,
+        ":block/children": []
+      },
+      {
+        ":block/uid": "child-2",
+        ":block/string": "Child two",
+        ":block/order": 1,
+        ":block/children": []
+      }
+    ]
+  }
+}

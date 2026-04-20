@@ -113,7 +113,7 @@ When the user requests to read content from Roam Research:
 
 ### How It Works
 
-- **Read page**: Queries the page UID, then recursively fetches all child blocks level-by-level (up to 10 levels deep), outputting an indented block tree
+- **Read page**: Uses the `/pull` API with a recursive selector to fetch the entire block tree in **one request**, then formats it client-side
 - **References**: Uses Datalog queries with ancestor rules to find all blocks (including deeply nested ones) that reference the target page via `[[page links]]`, grouped by source page
 - **Modified today**: Queries for blocks with edit timestamps after midnight today, returning the page titles sorted by most recent edit
 
@@ -255,10 +255,9 @@ When the user requests to write content to a page:
 
 ### How It Works
 
-1. The script first queries Roam's API to find the target page's UID
-2. If the page doesn't exist, it automatically creates it
-3. Content is appended as new blocks at the end of the page
-4. Each line (when using `--stdin`) becomes a separate block
+1. Uses `page-title` or `daily-note-page` in the block location — Roam automatically creates the page if it doesn't exist, so no separate query or page-creation step is needed
+2. Multiple blocks (flat or nested) are sent as a single `batch-actions` request — one API call regardless of count
+3. Nested blocks use tempids so the full tree is written atomically without waiting for parent UIDs
 
 ---
 
@@ -266,8 +265,8 @@ When the user requests to write content to a page:
 
 1. **Rate Limits**: Roam API has a limit of 50 requests per minute per graph
 2. **Authentication**: The API token must start with `roam-graph-token-` and be passed with `Bearer` prefix
-3. **Batch Operations**: Scripts use individual requests to handle errors gracefully
-4. **Duplicate Handling**: `create-pages.js` automatically skips pages that already exist; `write-content.js` automatically creates the page if it doesn't exist
+3. **Batch Operations**: Scripts use `batch-actions` to minimise API round trips. `create-pages.js` attempts a single batch; on conflict it falls back to one-by-one to skip existing pages
+4. **Auto Page Creation**: `write-content.js` uses `page-title` in block location — Roam creates the page automatically if it doesn't exist. No extra query needed
 5. **Page Title Formats**:
    - Daily notes use format: "January 21st, 2021"
    - Custom pages can use any format like "2026/January", "Project Alpha", etc.

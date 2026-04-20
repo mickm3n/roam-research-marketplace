@@ -47,10 +47,10 @@ Examples:
   # Update an existing block's content
   write-content.js --update-block "abc123xyz" --content "new content"
 
-  # Batch update/create via JSON stdin (most efficient for multiple operations)
+  # Batch via Roam's native batch-actions API (1 request, most efficient)
   echo '[
-    {"action":"update","uid":"abc123","content":"Mon: 重訓、小穎 House"},
-    {"action":"create","parent":"xyz456","content":"開發 AI 助理"}
+    {"action":"update-block","block":{"uid":"abc123","string":"Mon: 重訓、小穎 House"}},
+    {"action":"create-block","location":{"parent-uid":"xyz456","order":"last"},"block":{"string":"開發 AI 助理"}}
   ]' | write-content.js --stdin
 
   # Dry run to preview
@@ -335,7 +335,7 @@ async function createPage(config, pageTitle) {
 async function updateBlockContent(config, blockUid, content) {
   const payload = JSON.stringify({
     action: 'update-block',
-    data: { block: { uid: blockUid, string: content } }
+    block: { uid: blockUid, string: content }
   });
 
   const options = {
@@ -443,43 +443,42 @@ async function main() {
 
     // --- batch mode ---
     if (options.stdin && !options.page && !options.today && !options.parent && !options.updateBlock) {
-      // If stdin + no target, try to parse as JSON batch
+      // If stdin + no target, parse as JSON batch-actions array
       const raw = await new Promise(resolve => {
         let buf = '';
         process.stdin.on('data', c => buf += c);
         process.stdin.on('end', () => resolve(buf.trim()));
       });
-      let ops;
-      try { ops = JSON.parse(raw); } catch (e) {
+      let actions;
+      try { actions = JSON.parse(raw); } catch (e) {
         console.error('Error: JSON batch input is invalid');
         process.exit(1);
       }
-      if (!Array.isArray(ops)) { console.error('Error: batch input must be a JSON array'); process.exit(1); }
+      if (!Array.isArray(actions)) { console.error('Error: batch input must be a JSON array of Roam write actions'); process.exit(1); }
       if (options.dryRun) {
-        console.log('Dry run — batch operations:');
-        ops.forEach((op, i) => console.log(`  ${i + 1}. ${JSON.stringify(op)}`));
+        console.log('Dry run — batch-actions:');
+        actions.forEach((a, i) => console.log(`  ${i + 1}. ${JSON.stringify(a)}`));
         process.exit(0);
       }
       const config = loadConfig();
-      let ok = 0, fail = 0;
-      for (const op of ops) {
-        try {
-          if (op.action === 'update') {
-            await updateBlockContent(config, op.uid, op.content);
-          } else if (op.action === 'create') {
-            await createBlock(config, op.parent, op.content);
-          } else {
-            throw new Error(`Unknown action: ${op.action}`);
-          }
-          ok++;
-          process.stdout.write('.');
-        } catch (e) {
-          fail++;
-          process.stdout.write('x');
-        }
+      const payload = JSON.stringify({ action: 'batch-actions', actions });
+      const reqOptions = {
+        hostname: 'api.roamresearch.com',
+        path: `/api/graph/${config.graphName}/write`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          'Authorization': `Bearer ${config.apiToken}`,
+          'Accept': 'application/json'
+        },
+        timeout: 30000
+      };
+      const res = await makeHttpsRequest(reqOptions, payload);
+      console.log(`✓ batch-actions completed (${actions.length} actions)`);
+      if (res.data && res.data['tempids-to-uids']) {
+        console.log('tempids-to-uids:', JSON.stringify(res.data['tempids-to-uids']));
       }
-      console.log(`\n✓ ${ok} succeeded, ✗ ${fail} failed`);
-      if (fail > 0) process.exit(1);
       return;
     }
 

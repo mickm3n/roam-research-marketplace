@@ -12,13 +12,15 @@ Usage: write-content.js [options]
 Write content (blocks) to a Roam Research page.
 
 Options:
-  --page <title>       Target page title to write to
-  --today              Write to today's daily notes page
-  --content <text>     Content to write as a new block
-  --stdin              Read content from stdin (one block per line)
-  --nested             Use indented stdin input to create nested blocks (2 spaces per level)
-  --dry-run            Preview without making API calls
-  --help               Show this help message
+  --page <title>         Target page title to write to
+  --today                Write to today's daily notes page
+  --parent <uid>         Create new block(s) as children of a specific block UID
+  --update-block <uid>   Update an existing block's content (use with --content)
+  --content <text>       Content to write as a new block
+  --stdin                Read content from stdin (one block per line)
+  --nested               Use indented stdin input to create nested blocks (2 spaces per level)
+  --dry-run              Preview without making API calls
+  --help                 Show this help message
 
 Environment Variables (required):
   ROAM_API_TOKEN       Your Roam Research API token (starts with roam-graph-token-)
@@ -39,6 +41,18 @@ Examples:
   printf '%s\\n' '[[日記]]' '  **今日完成**' '    - 做了A' | \\
     write-content.js --page "April 19th, 2026" --nested
 
+  # Write blocks as children of a specific block UID
+  write-content.js --parent "abc123xyz" --content "child block"
+
+  # Update an existing block's content
+  write-content.js --update-block "abc123xyz" --content "new content"
+
+  # Batch update/create via JSON stdin (most efficient for multiple operations)
+  echo '[
+    {"action":"update","uid":"abc123","content":"Mon: 重訓、小穎 House"},
+    {"action":"create","parent":"xyz456","content":"開發 AI 助理"}
+  ]' | write-content.js --stdin
+
   # Dry run to preview
   write-content.js --today --content "Test content" --dry-run
 `);
@@ -50,6 +64,8 @@ function parseArgs() {
   const options = {
     page: null,
     today: false,
+    parent: null,
+    updateBlock: null,
     content: null,
     stdin: false,
     nested: false,
@@ -70,6 +86,12 @@ function parseArgs() {
       case '--today':
       case '-t':
         options.today = true;
+        break;
+      case '--parent':
+        options.parent = args[++i];
+        break;
+      case '--update-block':
+        options.updateBlock = args[++i];
         break;
       case '--content':
       case '-c':
@@ -309,6 +331,29 @@ async function createPage(config, pageTitle) {
   await makeHttpsRequest(options, payload);
 }
 
+// Update an existing block's string content
+async function updateBlockContent(config, blockUid, content) {
+  const payload = JSON.stringify({
+    action: 'update-block',
+    data: { block: { uid: blockUid, string: content } }
+  });
+
+  const options = {
+    hostname: 'api.roamresearch.com',
+    path: `/api/graph/${config.graphName}/write`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+      'Authorization': `Bearer ${config.apiToken}`,
+      'Accept': 'application/json'
+    },
+    timeout: 30000
+  };
+
+  return await makeHttpsRequest(options, payload);
+}
+
 // Create a block under a parent (optionally with a pre-generated uid)
 async function createBlock(config, parentUid, content, uid = null) {
   const block = uid ? { uid, string: content } : { string: content };
@@ -396,9 +441,104 @@ async function main() {
       process.exit(0);
     }
 
+    // --- batch mode ---
+    if (options.stdin && !options.page && !options.today && !options.parent && !options.updateBlock) {
+      // If stdin + no target, try to parse as JSON batch
+      const raw = await new Promise(resolve => {
+        let buf = '';
+        process.stdin.on('data', c => buf += c);
+        process.stdin.on('end', () => resolve(buf.trim()));
+      });
+      let ops;
+      try { ops = JSON.parse(raw); } catch (e) {
+        console.error('Error: JSON batch input is invalid');
+        process.exit(1);
+      }
+      if (!Array.isArray(ops)) { console.error('Error: batch input must be a JSON array'); process.exit(1); }
+      if (options.dryRun) {
+        console.log('Dry run — batch operations:');
+        ops.forEach((op, i) => console.log(`  ${i + 1}. ${JSON.stringify(op)}`));
+        process.exit(0);
+      }
+      const config = loadConfig();
+      let ok = 0, fail = 0;
+      for (const op of ops) {
+        try {
+          if (op.action === 'update') {
+            await updateBlockContent(config, op.uid, op.content);
+          } else if (op.action === 'create') {
+            await createBlock(config, op.parent, op.content);
+          } else {
+            throw new Error(`Unknown action: ${op.action}`);
+          }
+          ok++;
+          process.stdout.write('.');
+        } catch (e) {
+          fail++;
+          process.stdout.write('x');
+        }
+      }
+      console.log(`\n✓ ${ok} succeeded, ✗ ${fail} failed`);
+      if (fail > 0) process.exit(1);
+      return;
+    }
+
+    // --- update-block mode ---
+    if (options.updateBlock) {
+      if (!options.content) {
+        console.error('Error: --update-block requires --content <text>');
+        process.exit(1);
+      }
+      if (options.dryRun) {
+        console.log(`Dry run — update block ${options.updateBlock}: ${options.content}`);
+        process.exit(0);
+      }
+      const config = loadConfig();
+      await updateBlockContent(config, options.updateBlock, options.content);
+      console.log(`✓ Updated block ${options.updateBlock}`);
+      return;
+    }
+
+    // --- parent mode (create children under a block UID) ---
+    if (options.parent) {
+      let contentLines = [];
+      if (options.stdin || options.nested) {
+        const rawLines = options.nested
+          ? await readRawLinesFromStdin()
+          : await readContentFromStdin();
+        contentLines = options.nested ? rawLines : rawLines;
+      } else if (options.content) {
+        contentLines = [options.content];
+      } else {
+        console.error('Error: --parent requires --content or --stdin');
+        process.exit(1);
+      }
+
+      if (options.dryRun) {
+        console.log(`Dry run — create under parent ${options.parent}:`);
+        contentLines.forEach(l => console.log(`  - ${l}`));
+        process.exit(0);
+      }
+
+      const config = loadConfig();
+      if (options.nested) {
+        const tree = parseIndentedLines(contentLines);
+        const stats = { written: 0, failed: 0 };
+        await writeTree(config, options.parent, tree, stats);
+        console.log(`\n✓ Written: ${stats.written}, ✗ Failed: ${stats.failed}`);
+      } else {
+        for (const line of contentLines) {
+          await createBlock(config, options.parent, line);
+          process.stdout.write('.');
+        }
+        console.log(`\n✓ ${contentLines.length} block(s) created under ${options.parent}`);
+      }
+      return;
+    }
+
     // Validate: must specify either --page or --today
     if (!options.page && !options.today) {
-      console.error('Error: Must specify either --page <title> or --today');
+      console.error('Error: Must specify one of --page, --today, --parent, or --update-block');
       console.error('Run with --help for usage information.');
       process.exit(1);
     }

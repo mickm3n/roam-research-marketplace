@@ -39,7 +39,7 @@ Examples:
   read-content.js --modified-today
 
   # Read page with block references resolved inline
-  read-content.js --page "2026/April" --resolve-refs
+  read-content.js --page "Project Alpha" --resolve-refs
 
   # Get JSON output for programmatic use
   read-content.js --page "Project Alpha" --json

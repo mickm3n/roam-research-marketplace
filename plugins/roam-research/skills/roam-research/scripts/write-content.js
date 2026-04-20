@@ -38,19 +38,19 @@ Examples:
     write-content.js --page "Meeting Notes" --stdin
 
   # Write nested blocks using indentation (2 spaces per level)
-  printf '%s\\n' '[[日記]]' '  **今日完成**' '    - 做了A' | \\
-    write-content.js --page "April 19th, 2026" --nested
+  printf '%s\\n' 'Meeting Summary' '  **Decisions**' '    - Ship feature A' | \\
+    write-content.js --page "Meeting Notes" --nested
 
   # Write blocks as children of a specific block UID
   write-content.js --parent "abc123xyz" --content "child block"
 
   # Update an existing block's content
-  write-content.js --update-block "abc123xyz" --content "new content"
+  write-content.js --update-block "abc123xyz" --content "updated content"
 
   # Batch via Roam's native batch-actions API (1 request, most efficient)
   echo '[
-    {"action":"update-block","block":{"uid":"abc123","string":"Mon: 重訓、小穎 House"}},
-    {"action":"create-block","location":{"parent-uid":"xyz456","order":"last"},"block":{"string":"開發 AI 助理"}}
+    {"action":"update-block","block":{"uid":"abc123","string":"Mon: Gym, Team lunch"}},
+    {"action":"create-block","location":{"parent-uid":"xyz456","order":"last"},"block":{"string":"Ship feature A"}}
   ]' | write-content.js --stdin
 
   # Dry run to preview

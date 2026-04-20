@@ -11,8 +11,10 @@ Read content from Roam Research pages.
 
 Options:
   --page <title>       Read the full block tree of a page
+  --block <uid>        Read a specific block and its children by UID
   --references <title> Find all blocks that reference (backlink) a page
   --modified-today     List pages with blocks modified today
+  --resolve-refs       Resolve ((uid)) block references inline in output
   --json               Output results as JSON (for programmatic use)
   --help               Show this help message
 
@@ -24,6 +26,9 @@ Examples:
   # Read a page's content
   read-content.js --page "Project Alpha"
 
+  # Read a specific block by UID (useful for resolving embedded templates)
+  read-content.js --block "HdQFZpcYd"
+
   # Read today's daily notes
   read-content.js --page "February 8th, 2026"
 
@@ -32,6 +37,9 @@ Examples:
 
   # List pages modified today
   read-content.js --modified-today
+
+  # Read page with block references resolved inline
+  read-content.js --page "2026/April" --resolve-refs
 
   # Get JSON output for programmatic use
   read-content.js --page "Project Alpha" --json
@@ -43,8 +51,10 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
     page: null,
+    block: null,
     references: null,
     modifiedToday: false,
+    resolveRefs: false,
     json: false,
     help: false
   };
@@ -59,12 +69,19 @@ function parseArgs() {
       case '-p':
         options.page = args[++i];
         break;
+      case '--block':
+      case '-b':
+        options.block = args[++i];
+        break;
       case '--references':
       case '-r':
         options.references = args[++i];
         break;
       case '--modified-today':
         options.modifiedToday = true;
+        break;
+      case '--resolve-refs':
+        options.resolveRefs = true;
         break;
       case '--json':
         options.json = true;
@@ -235,15 +252,42 @@ async function buildBlockTree(config, parentUid, depth = 0, maxDepth = 10) {
   return blocks;
 }
 
+// Fetch a single block's string by UID
+async function fetchBlockString(config, uid) {
+  const query = `[:find ?s :in $ ?uid :where [?b :block/uid ?uid] [?b :block/string ?s]]`;
+  const result = await runQuery(config, query, [uid]);
+  return result.length > 0 ? result[0][0] : null;
+}
+
+// Resolve ((uid)) references in a block string
+async function resolveBlockRefs(config, str) {
+  const refPattern = /\(\(([a-zA-Z0-9_\-]+)\)\)/g;
+  const matches = [...str.matchAll(refPattern)];
+  if (matches.length === 0) return str;
+
+  let resolved = str;
+  for (const match of matches) {
+    const uid = match[1];
+    const content = await fetchBlockString(config, uid);
+    if (content) {
+      resolved = resolved.replace(match[0], `[${content}]`);
+    }
+  }
+  return resolved;
+}
+
 // Format block tree as indented text
-function formatBlockTree(blocks, indent = 0) {
+async function formatBlockTree(blocks, indent = 0, config = null, resolveRefs = false) {
   let output = '';
   const prefix = '  '.repeat(indent) + '- ';
 
   for (const block of blocks) {
-    output += prefix + block.string + '\n';
+    const str = (resolveRefs && config)
+      ? await resolveBlockRefs(config, block.string)
+      : block.string;
+    output += prefix + str + '\n';
     if (block.children && block.children.length > 0) {
-      output += formatBlockTree(block.children, indent + 1);
+      output += await formatBlockTree(block.children, indent + 1, config, resolveRefs);
     }
   }
 
@@ -251,7 +295,7 @@ function formatBlockTree(blocks, indent = 0) {
 }
 
 // Feature 1: Read page content
-async function readPage(config, pageTitle, jsonOutput) {
+async function readPage(config, pageTitle, jsonOutput, resolveRefs = false) {
   const uid = await queryPageUid(config, pageTitle);
 
   if (!uid) {
@@ -268,7 +312,30 @@ async function readPage(config, pageTitle, jsonOutput) {
     if (blocks.length === 0) {
       console.log('  (empty page)');
     } else {
-      console.log(formatBlockTree(blocks));
+      process.stdout.write(await formatBlockTree(blocks, 0, config, resolveRefs));
+    }
+  }
+}
+
+// Feature 1b: Read a specific block by UID
+async function readBlock(config, blockUid, jsonOutput, resolveRefs = false) {
+  const blockStr = await fetchBlockString(config, blockUid);
+
+  if (blockStr === null) {
+    console.error(`Error: Block "${blockUid}" not found.`);
+    process.exit(1);
+  }
+
+  const children = await buildBlockTree(config, blockUid);
+
+  if (jsonOutput) {
+    console.log(JSON.stringify({ uid: blockUid, string: blockStr, children }, null, 2));
+  } else {
+    const str = resolveRefs ? await resolveBlockRefs(config, blockStr) : blockStr;
+    console.log(`Block: (uid: ${blockUid})`);
+    console.log(`- ${str}`);
+    if (children.length > 0) {
+      process.stdout.write(await formatBlockTree(children, 1, config, resolveRefs));
     }
   }
 }
@@ -408,21 +475,23 @@ async function main() {
     }
 
     // Validate: must specify exactly one mode
-    const modes = [options.page, options.references, options.modifiedToday].filter(Boolean);
+    const modes = [options.page, options.block, options.references, options.modifiedToday].filter(Boolean);
     if (modes.length === 0) {
-      console.error('Error: Must specify one of --page, --references, or --modified-today');
+      console.error('Error: Must specify one of --page, --block, --references, or --modified-today');
       console.error('Run with --help for usage information.');
       process.exit(1);
     }
     if (modes.length > 1) {
-      console.error('Error: Cannot combine --page, --references, and --modified-today');
+      console.error('Error: Cannot combine --page, --block, --references, and --modified-today');
       process.exit(1);
     }
 
     const config = loadConfig();
 
     if (options.page) {
-      await readPage(config, options.page, options.json);
+      await readPage(config, options.page, options.json, options.resolveRefs);
+    } else if (options.block) {
+      await readBlock(config, options.block, options.json, options.resolveRefs);
     } else if (options.references) {
       await readReferences(config, options.references, options.json);
     } else if (options.modifiedToday) {

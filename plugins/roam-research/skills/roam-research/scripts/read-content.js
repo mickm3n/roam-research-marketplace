@@ -13,6 +13,8 @@ Read content from Roam Research pages.
 Options:
   --page <title>       Read the full block tree of a page
   --block <uid>        Read a specific block and its children by UID
+  --find <text>        Search for blocks containing text within a page (requires --page)
+  --uid-only           Output only UIDs, one per line (requires --find)
   --references <title> Find all blocks that reference (backlink) a page
   --modified-today     List pages with blocks modified today
   --json               Output results as JSON (for programmatic use)
@@ -25,6 +27,8 @@ Environment Variables (required):
 Examples:
   read-content.js --page "Project Alpha"
   read-content.js --block "HdQFZpcYd"
+  read-content.js --page "2026/April" --find "Review"
+  read-content.js --page "2026/April" --find "Review" --uid-only
   read-content.js --page "April 20th, 2026"
   read-content.js --references "Project Alpha"
   read-content.js --modified-today
@@ -34,13 +38,15 @@ Examples:
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const options = { page: null, block: null, references: null, modifiedToday: false, json: false, help: false };
+  const options = { page: null, block: null, find: null, uidOnly: false, references: null, modifiedToday: false, json: false, help: false };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--help': case '-h': options.help = true; break;
       case '--page': case '-p': options.page = args[++i]; break;
       case '--block': case '-b': options.block = args[++i]; break;
+      case '--find': case '-f': options.find = args[++i]; break;
+      case '--uid-only': options.uidOnly = true; break;
       case '--references': case '-r': options.references = args[++i]; break;
       case '--modified-today': options.modifiedToday = true; break;
       case '--json': options.json = true; break;
@@ -90,6 +96,46 @@ async function resolveTreeRefs(config, blocks) {
     string: await resolveBlockRefs(config, block.string),
     children: block.children.length > 0 ? await resolveTreeRefs(config, block.children) : []
   })));
+}
+
+function searchBlocks(blocks, text, results = []) {
+  const lower = text.toLowerCase();
+  for (const block of blocks) {
+    if (block.string.toLowerCase().includes(lower)) {
+      results.push({ uid: block.uid, string: block.string });
+    }
+    if (block.children.length > 0) searchBlocks(block.children, text, results);
+  }
+  return results;
+}
+
+async function findInPage(config, pageTitle, findText, uidOnly, jsonOutput) {
+  const eid = `[:node/title "${pageTitle.replace(/"/g, '\\"')}"]`;
+  const raw = await roamPull(config, eid, PULL_SELECTOR);
+
+  if (!raw) {
+    console.error(`Error: Page "${pageTitle}" not found.`);
+    process.exit(1);
+  }
+
+  const page = parsePullResult(raw);
+  const matches = searchBlocks(page.children, findText);
+
+  if (uidOnly) {
+    matches.forEach(m => console.log(m.uid));
+  } else if (jsonOutput) {
+    console.log(JSON.stringify({ page: pageTitle, find: findText, matches }, null, 2));
+  } else {
+    console.log(`Blocks matching "${findText}" in "${pageTitle}" (${matches.length} found):`);
+    if (matches.length === 0) {
+      console.log('  (no matches)');
+    } else {
+      matches.forEach(m => {
+        const preview = m.string.length > 80 ? m.string.substring(0, 77) + '...' : m.string;
+        console.log(`  [${m.uid}] ${preview}`);
+      });
+    }
+  }
 }
 
 async function readPage(config, pageTitle, jsonOutput, resolveRefs) {
@@ -250,6 +296,15 @@ async function main() {
 
   if (options.help) { showUsage(); process.exit(0); }
 
+  if (options.uidOnly && !options.find) {
+    console.error('Error: --uid-only requires --find');
+    process.exit(1);
+  }
+  if (options.find && !options.page) {
+    console.error('Error: --find requires --page');
+    process.exit(1);
+  }
+
   const modes = [options.page, options.block, options.references, options.modifiedToday].filter(Boolean);
   if (modes.length === 0) {
     console.error('Error: Must specify one of --page, --block, --references, or --modified-today');
@@ -264,7 +319,8 @@ async function main() {
   const config = loadConfig();
 
   try {
-    if (options.page) await readPage(config, options.page, options.json, options.resolveRefs);
+    if (options.page && options.find) await findInPage(config, options.page, options.find, options.uidOnly, options.json);
+    else if (options.page) await readPage(config, options.page, options.json, options.resolveRefs);
     else if (options.block) await readBlock(config, options.block, options.json, options.resolveRefs);
     else if (options.references) await readReferences(config, options.references, options.json);
     else if (options.modifiedToday) await readModifiedToday(config, options.json);

@@ -1,12 +1,12 @@
 ---
 name: roam-research
-description: Read, create, and write content in Roam Research via API. Use when the user wants to read page content, find references/backlinks, see recently modified pages, create pages, write content to today's daily notes, write to a specific page, or perform bulk operations in their Roam Research graph.
+description: Read, create, and write content in Roam Research via API. Use when the user wants to read page content, find blocks by text, find references/backlinks, see recently modified pages, create pages, write content to today's daily notes, write to a specific page, or write under a specific block UID.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
 # Roam Research Integration
 
-This Skill allows you to interact with Roam Research via their Backend API to read page content, find references/backlinks, list recently modified pages, create pages, and write content to pages.
+This Skill allows you to interact with Roam Research via their Backend API to read page content, find references/backlinks, list recently modified pages, create pages, and write content to pages or specific blocks.
 
 ## Prerequisites
 
@@ -21,393 +21,131 @@ This Skill requires the following environment variables:
 - **ROAM_API_TOKEN**: Your Roam Research API token (starts with `roam-graph-token-`)
 - **ROAM_GRAPH_NAME**: Your Roam Research graph name
 
-### Setting Environment Variables
-
-Users should set these variables before starting Claude Code:
-
-```bash
-export ROAM_API_TOKEN="roam-graph-token-xxxxxxxxxxxxxxxxxx"
-export ROAM_GRAPH_NAME="your-graph-name"
-claude
-```
-
-Or add to their shell profile (~/.bashrc, ~/.zshrc):
-
-```bash
-# Roam Research credentials
-export ROAM_API_TOKEN="roam-graph-token-xxxxxxxxxxxxxxxxxx"
-export ROAM_GRAPH_NAME="your-graph-name"
-```
-
-### Verification
-
-Before using this Skill, verify that environment variables are set:
-
-```bash
-echo $ROAM_API_TOKEN
-echo $ROAM_GRAPH_NAME
-```
-
 ## Available Scripts
 
-This Skill provides four scripts:
-
-| Script | Purpose | Use When |
-|--------|---------|----------|
-| `read-content.js` | Read page content, references, modified pages | User wants to read/view page content, find backlinks, or see recently modified pages |
-| `create-pages.js` | Create new pages | User wants to create one or more pages |
-| `write-content.js` | Write content blocks to a page (flat or nested) | User wants to add text blocks to a page; use `--nested` for outline structure |
+| Script | Purpose |
+|--------|---------|
+| `read-content.js` | Read page/block content, find blocks by text, find references, list modified pages |
+| `create-pages.js` | Create new pages |
+| `write-content.js` | Write content blocks to a page or under a specific block UID |
 
 ---
 
-## Script 1: Read Content (`read-content.js`)
-
-The `read-content.js` script reads content from Roam Research. It supports three modes: reading a page's full block tree, finding references/backlinks to a page, and listing pages modified today.
+## Script: Read Content (`read-content.js`)
 
 ### Modes
 
-Specify exactly one mode:
-
 - `--page <title>` or `-p <title>`: Read the full block tree of a page
+- `--block <uid>` or `-b <uid>`: Read a specific block and its children by UID
 - `--references <title>` or `-r <title>`: Find all blocks that reference (backlink) a page
 - `--modified-today`: List pages with blocks modified today
 
-### Options
+### Modifiers
 
+- `--find <text>` or `-f <text>`: Search blocks containing text within a page (requires `--page`)
+- `--uid-only`: Output only UIDs, one per line (requires `--find`) — useful for piping into `write-content.js --parent`
 - `--json`: Output results as JSON (for programmatic use)
-- `--help`: Show usage information
 
-### Read Content Workflow
+### Examples
 
-When the user requests to read content from Roam Research:
+```bash
+ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | head -1)
 
-1. **Verify environment variables**: Check that the required environment variables are set
-   ```bash
-   if [ -z "$ROAM_API_TOKEN" ] || [ -z "$ROAM_GRAPH_NAME" ]; then
-     echo "Error: Please set ROAM_API_TOKEN and ROAM_GRAPH_NAME environment variables"
-     exit 1
-   fi
-   ```
+# Read a page's full block tree
+node "$ROAM_SCRIPT" --page "2026/April"
 
-2. **Determine the mode**: Based on the user's request:
-   - To read a page's content: use `--page "Page Title"`
-   - To find what references a page: use `--references "Page Title"`
-   - To see what was modified today: use `--modified-today`
+# Read a specific block by UID
+node "$ROAM_SCRIPT" --block "HdQFZpcYd"
 
-3. **Run the script**:
-   ```bash
-   # Read a page's block tree
-   node scripts/read-content.js --page "Project Alpha"
+# Find blocks containing "Review" in a page
+node "$ROAM_SCRIPT" --page "2026/April" --find "Review"
 
-   # Find references/backlinks
-   node scripts/read-content.js --references "Project Alpha"
+# Get only the UID of matching blocks (for piping)
+UID=$(node "$ROAM_SCRIPT" --page "2026/April" --find "Review" --uid-only | head -1)
 
-   # List pages modified today
-   node scripts/read-content.js --modified-today
-   ```
+# Find backlinks to a page
+node "$ROAM_SCRIPT" --references "Project Alpha"
 
-4. **Use JSON mode** when you need structured data for further processing:
-   ```bash
-   node scripts/read-content.js --page "Project Alpha" --json
-   ```
+# List pages modified today
+node "$ROAM_SCRIPT" --modified-today
 
-### How It Works
-
-- **Read page**: Uses the `/pull` API with a recursive selector to fetch the entire block tree in **one request**, then formats it client-side
-- **References**: Uses Datalog queries with ancestor rules to find all blocks (including deeply nested ones) that reference the target page via `[[page links]]`, grouped by source page
-- **Modified today**: Queries for blocks with edit timestamps after midnight today, returning the page titles sorted by most recent edit
+# JSON output for programmatic use
+node "$ROAM_SCRIPT" --page "2026/April" --json
+```
 
 ---
 
-## Script 3: Create Pages (`create-pages.js`)
+## Script: Write Content (`write-content.js`)
 
-The `create-pages.js` script is a general-purpose tool for creating pages in Roam Research.
+### Target
 
-### Input Methods
+Specify one of:
 
-The script accepts page titles in three ways:
-
-1. **Command line**: `--titles "Title 1,Title 2,Title 3"`
-2. **From file**: `--file pages.txt` (one title per line)
-3. **From stdin**: `--stdin` (pipe titles from another command)
-
-### Options
-
-- `--children-view-type <type>`: Set children view type (bullet, numbered, document)
-- `--dry-run`: Preview what would be created without making API calls
-- `--help`: Show usage information
-
-### Create Pages Workflow
-
-When the user requests to create pages:
-
-1. **Verify environment variables**: Check that the required environment variables are set
-   ```bash
-   if [ -z "$ROAM_API_TOKEN" ] || [ -z "$ROAM_GRAPH_NAME" ]; then
-     echo "Error: Please set ROAM_API_TOKEN and ROAM_GRAPH_NAME environment variables"
-     exit 1
-   fi
-   ```
-
-2. **Determine page titles**: Based on user's request, figure out what pages need to be created
-   - For monthly pages: Generate titles like "2026/January", "2026/February", etc.
-   - For daily notes: Use Roam's format "January 1st, 2026"
-   - For custom pages: Use whatever titles the user requests
-
-3. **Create pages**: Use the script with appropriate method
-   ```bash
-   # Direct titles
-   node scripts/create-pages.js --titles "Title 1,Title 2"
-
-   # From stdin (most flexible)
-   echo -e "2026/January\n2026/February\n2026/March" | \
-     node scripts/create-pages.js --stdin
-   ```
-
-4. **Handle errors**: Check for API errors and rate limits
-
-5. **Confirm completion**: Let the user know which pages were created
-
----
-
-## Script 4: Write Content (`write-content.js`)
-
-The `write-content.js` script writes content (blocks) to an existing or new page in Roam Research. It supports writing to today's daily notes page or any specified page.
-
-### Target Page
-
-Specify the target page using one of:
-
-- `--today` or `-t`: Write to today's daily notes page (auto-generates title like "February 5th, 2026")
-- `--page <title>` or `-p <title>`: Write to a specific page by title
+- `--page <title>` or `-p <title>`: Write to a specific page (auto-created if it doesn't exist)
+- `--today` or `-t`: Write to today's daily notes page
+- `--parent <uid>`: Write as children of a specific block UID
+- `--update-block <uid>`: Update an existing block's content (use with `--content`)
 
 ### Content Input
 
-Provide content using one of:
-
 - `--content <text>` or `-c <text>`: Write a single block
-- `--stdin`: Read flat content from stdin (one block per line, all at same level)
-- `--nested`: Read indented content from stdin; **2 spaces per level** maps to Roam outline depth
+- `--stdin`: Read flat content from stdin (one block per line)
+- `--nested`: Read indented content from stdin; 2 spaces per level maps to Roam outline depth
 
 ### Options
 
-- `--dry-run`: Preview what would be written without making API calls
-- `--help`: Show usage information
+- `--dry-run`: Preview without making API calls
 
-### Nested Mode (`--nested`)
-
-Use `--nested` when you want to write a structured outline with sections and sub-bullets. Each block becomes a child of the block one indent level above it.
-
-```
-[[日記]]
-  **今日完成**
-    - 做了A
-    - 做了B
-  **心情與狀態**
-    整體不錯
-```
+### Examples
 
 ```bash
+ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "write-content.js" | head -1)
+
+# Write to today's daily notes
+node "$ROAM_SCRIPT" --today --content "Meeting notes"
+
+# Write to a specific page
+node "$ROAM_SCRIPT" --page "Project Alpha" --content "TODO: Review design doc"
+
+# Write nested blocks to a page
 printf '%s\n' \
-  '[[日記]]' \
-  '  **今日完成**' \
-  '    - 做了A' \
-  '  **心情與狀態**' \
-  '    整體不錯' \
-  | node scripts/write-content.js --page "April 19th, 2026" --nested
+  "#Tag/Journal" \
+  "  **今日完成**" \
+  "    - 做了A" \
+  "  **心情與狀態**" \
+  "    整體不錯" \
+  | node "$ROAM_SCRIPT" --page "April 19th, 2026" --nested
+
+# Write under a specific block UID (e.g. weekly Review block)
+READ_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | head -1)
+UID=$(node "$READ_SCRIPT" --page "2026/April" --find "Review" --uid-only | tail -1)
+printf '%s\n' "這週完成了..." "下週計畫..." | node "$ROAM_SCRIPT" --parent "$UID" --stdin
+
+# Update an existing block's content
+node "$ROAM_SCRIPT" --update-block "abc123xyz" --content "updated content"
 ```
 
-### Write Content Workflow
+**Note on `--nested` format**: Do NOT use `- ` prefix on lines — Roam adds bullets automatically. Use 2-space indentation per level.
 
-When the user requests to write content to a page:
+---
 
-1. **Verify environment variables**: Check that the required environment variables are set
-   ```bash
-   if [ -z "$ROAM_API_TOKEN" ] || [ -z "$ROAM_GRAPH_NAME" ]; then
-     echo "Error: Please set ROAM_API_TOKEN and ROAM_GRAPH_NAME environment variables"
-     exit 1
-   fi
-   ```
+## Script: Create Pages (`create-pages.js`)
 
-2. **Determine the target page**:
-   - If the user wants to write to today's page, use `--today`
-   - If the user specifies a page name, use `--page "Page Title"`
+```bash
+ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "create-pages.js" | head -1)
 
-3. **Prepare the content**: Based on the user's request, determine the text to write
-   - The content supports full Roam markdown syntax (e.g., `**bold**`, `[[page links]]`, `#tags`, `{{TODO}}`)
+# Create specific pages
+node "$ROAM_SCRIPT" --titles "2026/January,2026/February,2026/March"
 
-4. **Write content**: Use the script with appropriate method
-   ```bash
-   # Write to today's daily notes
-   node scripts/write-content.js --today --content "Meeting notes from standup"
-
-   # Write to a specific page
-   node scripts/write-content.js --page "Project Alpha" --content "TODO: Review design doc"
-
-   # Write multiple blocks from stdin
-   echo -e "First block\nSecond block\nThird block" | \
-     node scripts/write-content.js --page "Meeting Notes" --stdin
-   ```
-
-5. **Handle errors**: Check for API errors and rate limits
-
-6. **Confirm completion**: Let the user know what was written and to which page
-
-### How It Works
-
-1. Uses `page-title` or `daily-note-page` in the block location — Roam automatically creates the page if it doesn't exist, so no separate query or page-creation step is needed
-2. Multiple blocks (flat or nested) are sent as a single `batch-actions` request — one API call regardless of count
-3. Nested blocks use tempids so the full tree is written atomically without waiting for parent UIDs
+# Create from stdin
+echo -e "Page One\nPage Two" | node "$ROAM_SCRIPT" --stdin
+```
 
 ---
 
 ## Important Notes
 
 1. **Rate Limits**: Roam API has a limit of 50 requests per minute per graph
-2. **Authentication**: The API token must start with `roam-graph-token-` and be passed with `Bearer` prefix
-3. **Batch Operations**: Scripts use `batch-actions` to minimise API round trips. `create-pages.js` attempts a single batch; on conflict it falls back to one-by-one to skip existing pages
-4. **Auto Page Creation**: `write-content.js` uses `page-title` in block location — Roam creates the page automatically if it doesn't exist. No extra query needed
-5. **Page Title Formats**:
-   - Daily notes use format: "January 21st, 2021"
-   - Custom pages can use any format like "2026/January", "Project Alpha", etc.
-6. **Content Format**: Content written via `write-content.js` supports Roam's markdown syntax including `**bold**`, `[[links]]`, `#tags`, `((block references))`, `{{TODO}}`, etc.
-
-## Error Handling
-
-Common errors and solutions:
-- **400 BAD REQUEST**: Check input format and parameter values
-- **401 UNAUTHORIZED**: Verify API token and permissions (check ROAM_API_TOKEN environment variable)
-- **429 TOO MANY REQUESTS**: Slow down, you've hit the rate limit (50 req/min)
-- **503 SERVICE UNAVAILABLE**: Graph is not ready, try again in a moment
-- **Environment variables not set**: User needs to export ROAM_API_TOKEN and ROAM_GRAPH_NAME
-
-## Example Usage
-
-### Reading Content
-
-**Example 1: Read a page's content**
-
-User: "Show me what's on my Project Alpha page in Roam"
-
-Your workflow:
-```bash
-node scripts/read-content.js --page "Project Alpha"
-```
-
-**Example 2: Find references/backlinks**
-
-User: "What pages reference Project Alpha in my Roam graph?"
-
-Your workflow:
-```bash
-node scripts/read-content.js --references "Project Alpha"
-```
-
-**Example 3: See what was modified today**
-
-User: "What pages did I edit today in Roam?"
-
-Your workflow:
-```bash
-node scripts/read-content.js --modified-today
-```
-
-**Example 4: Read today's daily notes**
-
-User: "Show me today's daily notes page"
-
-Your workflow:
-```bash
-# Use Roam's daily notes date format
-node scripts/read-content.js --page "February 8th, 2026"
-```
-
-**Example 5: Get JSON output for further processing**
-
-```bash
-node scripts/read-content.js --page "Project Alpha" --json
-```
-
-### Creating Pages
-
-**Example 1: Monthly pages for 2026**
-
-User: "Create monthly pages for 2026 in my Roam Research (format: 2026/January)"
-
-Your workflow:
-```bash
-echo -e "2026/January\n2026/February\n2026/March\n2026/April\n2026/May\n2026/June\n2026/July\n2026/August\n2026/September\n2026/October\n2026/November\n2026/December" | \
-  node scripts/create-pages.js --stdin
-```
-
-**Example 2: Project pages**
-
-User: "Create pages for my three projects: Alpha, Beta, and Gamma"
-
-Your workflow:
-```bash
-node scripts/create-pages.js \
-  --titles "Project Alpha,Project Beta,Project Gamma"
-```
-
-### Writing Content
-
-**Example 3: Write to today's daily notes**
-
-User: "Add a note to today's Roam page: Had a great brainstorming session about the new product."
-
-Your workflow:
-```bash
-node scripts/write-content.js \
-  --today \
-  --content "Had a great brainstorming session about the new product."
-```
-
-**Example 4: Write to a specific page**
-
-User: "Add 'Review Q1 metrics' to my Project Alpha page in Roam"
-
-Your workflow:
-```bash
-node scripts/write-content.js \
-  --page "Project Alpha" \
-  --content "Review Q1 metrics"
-```
-
-**Example 5: Write multiple blocks**
-
-User: "Add my meeting notes to the Team Standup page: discussed roadmap, assigned tasks to Bob, next meeting Friday"
-
-Your workflow:
-```bash
-echo -e "discussed roadmap\nassigned tasks to Bob\nnext meeting Friday" | \
-  node scripts/write-content.js --page "Team Standup" --stdin
-```
-
-**Example 6: Write with Roam formatting**
-
-User: "Add a TODO item to today's page: finish the design review"
-
-Your workflow:
-```bash
-node scripts/write-content.js \
-  --today \
-  --content "{{TODO}} finish the design review"
-```
-
-**Example 7: Dry run first**
-
-```bash
-# Preview what would be written
-node scripts/write-content.js --today --content "Test content" --dry-run
-
-# If looks good, write it
-node scripts/write-content.js --today --content "Test content"
-```
-
-## Security Notes
-
-- **Never hardcode API tokens** in scripts or configuration files
-- Environment variables are the recommended way to provide credentials
-- Tokens are not logged or displayed in output
-- Make sure not to commit `.env` files or similar to version control
+2. **Auto Page Creation**: `write-content.js` creates the target page automatically if it doesn't exist
+3. **Page Title Formats**: Daily notes use format `"January 21st, 2026"`; custom pages use any format like `"2026/April"`
+4. **Roam Markdown**: Content supports `**bold**`, `[[links]]`, `#tags`, `((block references))`, `{{TODO}}`, etc.

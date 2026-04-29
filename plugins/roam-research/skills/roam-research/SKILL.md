@@ -49,7 +49,7 @@ This Skill requires the following environment variables:
 ### Examples
 
 ```bash
-ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | head -1)
+ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | sort -V | tail -1)
 
 # Read a page's full block tree
 node "$ROAM_SCRIPT" --page "2026/April"
@@ -99,7 +99,7 @@ Specify one of:
 ### Examples
 
 ```bash
-ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "write-content.js" | head -1)
+ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "write-content.js" | sort -V | tail -1)
 
 # Write to today's daily notes
 node "$ROAM_SCRIPT" --today --content "Meeting notes"
@@ -117,7 +117,7 @@ printf '%s\n' \
   | node "$ROAM_SCRIPT" --page "April 19th, 2026" --nested
 
 # Write under a specific block UID (e.g. weekly Review block)
-READ_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | head -1)
+READ_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | sort -V | tail -1)
 UID=$(node "$READ_SCRIPT" --page "2026/April" --find "Review" --uid-only | tail -1)
 printf '%s\n' "這週完成了..." "下週計畫..." | node "$ROAM_SCRIPT" --parent "$UID" --stdin
 
@@ -132,7 +132,7 @@ node "$ROAM_SCRIPT" --update-block "abc123xyz" --content "updated content"
 ## Script: Create Pages (`create-pages.js`)
 
 ```bash
-ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "create-pages.js" | head -1)
+ROAM_SCRIPT=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "create-pages.js" | sort -V | tail -1)
 
 # Create specific pages
 node "$ROAM_SCRIPT" --titles "2026/January,2026/February,2026/March"

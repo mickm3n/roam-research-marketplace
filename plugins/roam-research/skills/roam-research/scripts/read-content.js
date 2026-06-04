@@ -16,6 +16,8 @@ Options:
   --find <text>        Search for blocks containing text within a page (requires --page)
   --uid-only           Output only UIDs, one per line (requires --find)
   --references <title> Find all blocks that reference (backlink) a page
+                       Accepts "#Tag/Movie" or "Tag/Movie" — strips leading # automatically
+  --search <text>      Search for blocks containing text across all pages
   --modified-today     List pages with blocks modified today
   --json               Output results as JSON (for programmatic use)
   --help               Show this help message
@@ -30,7 +32,9 @@ Examples:
   read-content.js --page "2026/April" --find "Review"
   read-content.js --page "2026/April" --find "Review" --uid-only
   read-content.js --page "April 20th, 2026"
-  read-content.js --references "Project Alpha"
+  read-content.js --references "Tag/Movie"
+  read-content.js --references "#Tag/Movie"
+  read-content.js --search "後室"
   read-content.js --modified-today
   read-content.js --page "Project Alpha" --json
 `);
@@ -38,7 +42,7 @@ Examples:
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const options = { page: null, block: null, find: null, uidOnly: false, references: null, modifiedToday: false, json: false, help: false };
+  const options = { page: null, block: null, find: null, uidOnly: false, references: null, search: null, modifiedToday: false, json: false, help: false };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -48,6 +52,7 @@ function parseArgs() {
       case '--find': case '-f': options.find = args[++i]; break;
       case '--uid-only': options.uidOnly = true; break;
       case '--references': case '-r': options.references = args[++i]; break;
+      case '--search': case '-s': options.search = args[++i]; break;
       case '--modified-today': options.modifiedToday = true; break;
       case '--json': options.json = true; break;
       default:
@@ -193,7 +198,61 @@ async function readBlock(config, blockUid, jsonOutput, resolveRefs) {
   }
 }
 
+async function searchAllPages(config, searchText, jsonOutput) {
+  const ancestorRule = '[[(ancestor ?b ?a) [?a :block/children ?b]] [(ancestor ?b ?a) [?parent :block/children ?b] (ancestor ?parent ?a)]]';
+  const ancestorQuery = `[:find ?block-str ?block-uid ?page-title
+ :in $ ?search-text %
+ :where [?block :block/string ?block-str]
+        [(clojure.string/includes? ?block-str ?search-text)]
+        [?block :block/uid ?block-uid]
+        (ancestor ?block ?page)
+        [?page :node/title ?page-title]]`;
+
+  let result;
+  try {
+    result = await roamQuery(config, ancestorQuery, [searchText, ancestorRule]);
+  } catch {
+    const simpleQuery = `[:find ?block-str ?block-uid ?page-title
+ :in $ ?search-text
+ :where [?block :block/string ?block-str]
+        [(clojure.string/includes? ?block-str ?search-text)]
+        [?block :block/uid ?block-uid]
+        [?page :block/children ?block]
+        [?page :node/title ?page-title]]`;
+    result = await roamQuery(config, simpleQuery, [searchText]);
+  }
+
+  const byPage = {};
+  for (const [blockStr, blockUid, srcPageTitle] of result) {
+    if (!byPage[srcPageTitle]) byPage[srcPageTitle] = [];
+    byPage[srcPageTitle].push({ string: blockStr, uid: blockUid });
+  }
+
+  if (jsonOutput) {
+    const references = Object.entries(byPage).map(([page, blocks]) => ({ page, blocks }));
+    console.log(JSON.stringify({ search: searchText, count: result.length, references }, null, 2));
+  } else {
+    console.log(`Search results for "${searchText}" (${result.length} found):\n`);
+    const pages = Object.keys(byPage).sort();
+    if (pages.length === 0) {
+      console.log('  (no results found)');
+    } else {
+      for (const page of pages) {
+        console.log(`From "${page}":`);
+        for (const block of byPage[page]) {
+          const preview = block.string.length > 100 ? block.string.substring(0, 97) + '...' : block.string;
+          console.log(`  - ${preview} (uid: ${block.uid})`);
+        }
+        console.log('');
+      }
+    }
+  }
+}
+
 async function readReferences(config, pageTitle, jsonOutput) {
+  // Strip leading # so both "#Tag/Movie" and "Tag/Movie" work
+  const resolvedTitle = pageTitle.startsWith('#') ? pageTitle.slice(1) : pageTitle;
+
   const ancestorRule = '[[(ancestor ?b ?a) [?a :block/children ?b]] [(ancestor ?b ?a) [?parent :block/children ?b] (ancestor ?parent ?a)]]';
   const ancestorQuery = `[:find ?block-str ?block-uid ?page-title
  :in $ ?ref-title %
@@ -206,7 +265,7 @@ async function readReferences(config, pageTitle, jsonOutput) {
 
   let result;
   try {
-    result = await roamQuery(config, ancestorQuery, [pageTitle, ancestorRule]);
+    result = await roamQuery(config, ancestorQuery, [resolvedTitle, ancestorRule]);
   } catch {
     const simpleQuery = `[:find ?block-str ?block-uid ?page-title
  :in $ ?ref-title
@@ -216,7 +275,7 @@ async function readReferences(config, pageTitle, jsonOutput) {
         [?block :block/uid ?block-uid]
         [?page :node/title ?page-title]
         [?page :block/children ?block]]`;
-    result = await roamQuery(config, simpleQuery, [pageTitle]);
+    result = await roamQuery(config, simpleQuery, [resolvedTitle]);
   }
 
   const byPage = {};
@@ -227,9 +286,9 @@ async function readReferences(config, pageTitle, jsonOutput) {
 
   if (jsonOutput) {
     const references = Object.entries(byPage).map(([page, blocks]) => ({ page, blocks }));
-    console.log(JSON.stringify({ referenceTo: pageTitle, count: result.length, references }, null, 2));
+    console.log(JSON.stringify({ referenceTo: resolvedTitle, count: result.length, references }, null, 2));
   } else {
-    console.log(`References to "${pageTitle}" (${result.length} found):\n`);
+    console.log(`References to "${resolvedTitle}" (${result.length} found):\n`);
     const pages = Object.keys(byPage).sort();
     if (pages.length === 0) {
       console.log('  (no references found)');
@@ -305,14 +364,14 @@ async function main() {
     process.exit(1);
   }
 
-  const modes = [options.page, options.block, options.references, options.modifiedToday].filter(Boolean);
+  const modes = [options.page, options.block, options.references, options.search, options.modifiedToday].filter(Boolean);
   if (modes.length === 0) {
-    console.error('Error: Must specify one of --page, --block, --references, or --modified-today');
+    console.error('Error: Must specify one of --page, --block, --references, --search, or --modified-today');
     console.error('Run with --help for usage information.');
     process.exit(1);
   }
-  if (modes.length > 1) {
-    console.error('Error: Cannot combine --page, --block, --references, and --modified-today');
+  if (modes.length > 1 && !(options.page && options.find)) {
+    console.error('Error: Cannot combine --page, --block, --references, --search, and --modified-today');
     process.exit(1);
   }
 
@@ -323,6 +382,7 @@ async function main() {
     else if (options.page) await readPage(config, options.page, options.json, options.resolveRefs);
     else if (options.block) await readBlock(config, options.block, options.json, options.resolveRefs);
     else if (options.references) await readReferences(config, options.references, options.json);
+    else if (options.search) await searchAllPages(config, options.search, options.json);
     else if (options.modifiedToday) await readModifiedToday(config, options.json);
   } catch (error) {
     console.error('\nFatal error:');

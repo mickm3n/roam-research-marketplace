@@ -14,7 +14,9 @@ Options:
   --page <title>       Read the full block tree of a page
   --block <uid>        Read a specific block and its children by UID
   --find <text>        Search for blocks containing text within a page (requires --page)
-  --uid-only           Output only UIDs, one per line (requires --find)
+  --find-top <text>    Like --find but only scans top-level blocks; returns matching block(s)
+                       with their full subtree (requires --page)
+  --uid-only           Output only UIDs, one per line (requires --find or --find-top)
   --references <title> Find all blocks that reference (backlink) a page
                        Accepts "#Tag/Movie" or "Tag/Movie" — strips leading # automatically
   --search <text>      Search for blocks containing text across all pages
@@ -37,12 +39,14 @@ Examples:
   read-content.js --search "後室"
   read-content.js --modified-today
   read-content.js --page "Project Alpha" --json
+  read-content.js --page "June 5th, 2026" --find-top "#Tag/Journal"
+  read-content.js --page "June 5th, 2026" --find-top "#Tag/Journal" --json
 `);
 }
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const options = { page: null, block: null, find: null, uidOnly: false, references: null, search: null, modifiedToday: false, json: false, help: false };
+  const options = { page: null, block: null, find: null, findTop: null, uidOnly: false, references: null, search: null, modifiedToday: false, json: false, help: false };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -50,6 +54,7 @@ function parseArgs() {
       case '--page': case '-p': options.page = args[++i]; break;
       case '--block': case '-b': options.block = args[++i]; break;
       case '--find': case '-f': options.find = args[++i]; break;
+      case '--find-top': options.findTop = args[++i]; break;
       case '--uid-only': options.uidOnly = true; break;
       case '--references': case '-r': options.references = args[++i]; break;
       case '--search': case '-s': options.search = args[++i]; break;
@@ -112,6 +117,30 @@ function searchBlocks(blocks, text, results = []) {
     if (block.children.length > 0) searchBlocks(block.children, text, results);
   }
   return results;
+}
+
+async function findTopLevel(config, pageTitle, findText, uidOnly, jsonOutput) {
+  const eid = `[:node/title "${pageTitle.replace(/"/g, '\\"')}"]`;
+  const raw = await roamPull(config, eid, PULL_SELECTOR);
+
+  if (!raw) {
+    console.error(`Error: Page "${pageTitle}" not found.`);
+    process.exit(1);
+  }
+
+  const page = parsePullResult(raw);
+  const lower = findText.toLowerCase();
+  const matches = page.children.filter(b => b.string.toLowerCase().includes(lower));
+
+  if (uidOnly) {
+    matches.forEach(m => console.log(m.uid));
+  } else if (jsonOutput) {
+    console.log(JSON.stringify({ page: pageTitle, findTop: findText, blocks: matches }, null, 2));
+  } else {
+    if (matches.length > 0) {
+      process.stdout.write(formatBlockTree(matches));
+    }
+  }
 }
 
 async function findInPage(config, pageTitle, findText, uidOnly, jsonOutput) {
@@ -355,12 +384,16 @@ async function main() {
 
   if (options.help) { showUsage(); process.exit(0); }
 
-  if (options.uidOnly && !options.find) {
-    console.error('Error: --uid-only requires --find');
+  if (options.uidOnly && !options.find && !options.findTop) {
+    console.error('Error: --uid-only requires --find or --find-top');
     process.exit(1);
   }
   if (options.find && !options.page) {
     console.error('Error: --find requires --page');
+    process.exit(1);
+  }
+  if (options.findTop && !options.page) {
+    console.error('Error: --find-top requires --page');
     process.exit(1);
   }
 
@@ -370,7 +403,7 @@ async function main() {
     console.error('Run with --help for usage information.');
     process.exit(1);
   }
-  if (modes.length > 1 && !(options.page && options.find)) {
+  if (modes.length > 1 && !(options.page && (options.find || options.findTop))) {
     console.error('Error: Cannot combine --page, --block, --references, --search, and --modified-today');
     process.exit(1);
   }
@@ -378,7 +411,8 @@ async function main() {
   const config = loadConfig();
 
   try {
-    if (options.page && options.find) await findInPage(config, options.page, options.find, options.uidOnly, options.json);
+    if (options.page && options.findTop) await findTopLevel(config, options.page, options.findTop, options.uidOnly, options.json);
+    else if (options.page && options.find) await findInPage(config, options.page, options.find, options.uidOnly, options.json);
     else if (options.page) await readPage(config, options.page, options.json, options.resolveRefs);
     else if (options.block) await readBlock(config, options.block, options.json, options.resolveRefs);
     else if (options.references) await readReferences(config, options.references, options.json);

@@ -29,6 +29,17 @@ This Skill requires the following environment variables:
 | `create-pages.js` | Create new pages |
 | `write-content.js` | Write content blocks to a page or under a specific block UID |
 
+## Locating the Scripts (canonical snippet)
+
+The plugin cache path is versioned — never hardcode it. From any skill, script, or shell, resolve the newest installed copy with:
+
+```bash
+ROAM_READ=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "read-content.js" | sort -V | tail -1)
+ROAM_WRITE=$(find ~/.claude/plugins/cache/roam-research-marketplace -name "write-content.js" | sort -V | tail -1)
+```
+
+`sort -V | tail -1` picks the highest version when multiple versions are cached. This section is the single source of truth for the discovery snippet — callers outside this plugin use it as-is and should not restate the mechanics.
+
 ---
 
 ## Script: Read Content (`read-content.js`)
@@ -37,13 +48,15 @@ This Skill requires the following environment variables:
 
 - `--page <title>` or `-p <title>`: Read the full block tree of a page
 - `--block <uid>` or `-b <uid>`: Read a specific block and its children by UID
-- `--references <title>` or `-r <title>`: Find all blocks that reference (backlink) a page
+- `--references <title>` or `-r <title>`: Find all blocks that reference (backlink) a page — accepts `#Tag/X` or `Tag/X` (leading `#` stripped automatically)
+- `--search <text>`: Search blocks containing text across all pages
 - `--modified-today`: List pages with blocks modified today
 
 ### Modifiers
 
 - `--find <text>` or `-f <text>`: Search blocks containing text within a page (requires `--page`)
-- `--uid-only`: Output only UIDs, one per line (requires `--find`) — useful for piping into `write-content.js --parent`
+- `--find-top <text>`: Like `--find` but scans top-level blocks only, returning matches with their full subtree (requires `--page`) — the way to grab a tagged section such as `#Tag/MonthlyReview`
+- `--uid-only`: Output only UIDs, one per line (requires `--find` or `--find-top`) — useful for piping into `write-content.js --parent`
 - `--json`: Output results as JSON (for programmatic use)
 
 ### Examples
@@ -59,6 +72,9 @@ node "$ROAM_SCRIPT" --block "HdQFZpcYd"
 
 # Find blocks containing "Review" in a page
 node "$ROAM_SCRIPT" --page "2026/April" --find "Review"
+
+# Grab a tagged top-level section with its whole subtree
+node "$ROAM_SCRIPT" --page "2026/April" --find-top "#Tag/MonthlyReview"
 
 # Get only the UID of matching blocks (for piping)
 UID=$(node "$ROAM_SCRIPT" --page "2026/April" --find "Review" --uid-only | head -1)
@@ -90,7 +106,7 @@ Specify one of:
 
 - `--content <text>` or `-c <text>`: Write a single block
 - `--stdin`: Read flat content from stdin (one block per line)
-- `--nested`: Read indented content from stdin; 2 spaces per level maps to Roam outline depth
+- `--nested`: Read indented content from stdin; 2 spaces per level maps to Roam outline depth. A leading `- ` on a line is optional — it is stripped before writing
 
 ### Options
 
@@ -125,7 +141,7 @@ printf '%s\n' "這週完成了..." "下週計畫..." | node "$ROAM_SCRIPT" --par
 node "$ROAM_SCRIPT" --update-block "abc123xyz" --content "updated content"
 ```
 
-**Note on `--nested` format**: Do NOT use `- ` prefix on lines — Roam adds bullets automatically. Use 2-space indentation per level.
+**Note on `- ` prefixes**: Roam renders bullets itself. With `--nested`, a leading `- ` is optional — the parser strips it before writing (verified round-trip 2026-07-29). With `--stdin` or `--content`, leave it out: flat input is not stripped, so a literal `- ` would be stored inside the block text.
 
 ---
 
